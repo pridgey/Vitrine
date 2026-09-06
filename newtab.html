@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>New Tab</title>
+  <link rel="stylesheet" href="css/vitrine.css">
+</head>
+<body>
+
+  <div class="ground" aria-hidden="true">
+    <div class="backdrop" id="backdrop"></div>
+    <div class="veil"></div>
+    <div class="bloom bloom-a"></div>
+    <div class="bloom bloom-b"></div>
+    <div class="grain"></div>
+  </div>
+
+  <main class="case" id="case">
+    <div class="stack">
+      <article class="piece" id="piece" tabindex="0" role="button" aria-expanded="false">
+        <div class="object" id="object"></div>
+        <div class="label">
+          <span class="label-field" id="labelField"></span>
+          <span class="label-date" id="labelDate"></span>
+        </div>
+        <span class="cue" id="cue">Read the note</span>
+      </article>
+
+      <a class="companion" id="companion" target="_blank" rel="noopener" hidden>
+        <img class="companion-thumb" id="companionThumb" alt="" hidden>
+        <span class="companion-text">
+          <span class="companion-label" id="companionLabel"></span>
+          <span class="companion-title" id="companionTitle"></span>
+        </span>
+      </a>
+    </div>
+  </main>
+
+  <div class="scrim" id="scrim" hidden></div>
+
+  <aside class="sheet note" id="note" hidden aria-labelledby="noteHead">
+    <p class="sheet-head" id="noteHead"></p>
+    <div class="gallery" id="gallery" hidden>
+      <div class="gallery-strip" id="galleryStrip" tabindex="0" role="group" aria-label="Images in this post"></div>
+      <p class="gallery-news" id="galleryNews" hidden></p>
+      <div class="gallery-bar" id="galleryBar" hidden>
+        <button class="gallery-step" id="galleryPrev" type="button" aria-label="Previous image">&#8592;</button>
+        <span class="gallery-count" id="galleryCount" aria-live="polite"></span>
+        <button class="gallery-step" id="galleryNext" type="button" aria-label="Next image">&#8594;</button>
+      </div>
+    </div>
+    <div class="note-body" id="noteBody"></div>
+    <div class="sheet-foot">
+      <a class="note-link" id="noteLink" target="_blank" rel="noopener"></a>
+      <button class="link-btn" id="noteClose">Close</button>
+    </div>
+  </aside>
+
+  <aside class="sheet panel" id="panel" hidden aria-labelledby="panelHead">
+    <p class="sheet-head" id="panelHead">Settings</p>
+    <div class="panel-body" id="panelBody"></div>
+    <div class="sheet-foot">
+      <button class="link-btn subtle" id="panelReset">Reset everything</button>
+      <button class="link-btn" id="panelClose">Close</button>
+    </div>
+  </aside>
+
+  <footer class="apparatus">
+    <div class="left">
+      <a class="credit" id="credit" target="_blank" rel="noopener" hidden></a>
+      <div class="clock">
+        <span class="time" id="time"></span>
+        <span class="date" id="date"></span>
+      </div>
+    </div>
+    <div class="right">
+      <button class="weather" id="weather" title="Weather — click to change location">&mdash;</button>
+      <button class="tool" id="advance" title="Show something else (arrow keys)" aria-label="Show something else">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M20 11a8 8 0 1 0-.7 4.5M20 5.5V11h-5.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button class="tool" id="settings" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6M18.7 18.7l-1.6-1.6M6.9 6.9L5.3 5.3" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  </footer>
+
+  <script src="js/base.js"></script>
+  <script src="js/pieces.js"></script>
+  <script src="js/plates.js"></script>
+  <script src="js/feeds.js"></script>
+  <script src="js/backdrop.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/newtab.js"></script>
+</body>
+</html>
