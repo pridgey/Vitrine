@@ -246,6 +246,16 @@ let backdropOnScreen: string | null = null;
 
 export const backdropUp = (): boolean => backdropOnScreen !== null;
 
+/* The one place a URL from somebody else's server is written into CSS. A
+ * quote in it would close the url() and let everything after be read as more
+ * declarations, so it goes through the URL parser and comes back out as href:
+ * that percent-encodes a quote and drops a newline, and leaves a well-formed
+ * URL exactly as it was. Anything that will not parse is not worth showing. */
+function cssUrl(url: string): string | null {
+  try { return `url("${new URL(url).href}")`; }
+  catch { return null; }
+}
+
 export function applyBackdrop(image: BackdropImage | null): void {
   const layer = $('backdrop');
   const credit = $('credit');
@@ -254,16 +264,20 @@ export function applyBackdrop(image: BackdropImage | null): void {
   if (url === backdropOnScreen) return;
   backdropOnScreen = url;
 
-  if (!image) {
+  const clear = (): void => {
     layer.style.opacity = '0';
     document.body.classList.remove('has-image');
     credit.hidden = true;
-    return;
-  }
+  };
+
+  if (!image) { clear(); return; }
 
   const pre = new Image();
   pre.onload = () => {
-    layer.style.backgroundImage = `url("${image.url}")`;
+    const css = cssUrl(image.url);
+    if (!css) { clear(); return; }
+
+    layer.style.backgroundImage = css;
     layer.style.opacity = '1';
     document.body.classList.add('has-image');
 
@@ -282,10 +296,6 @@ export function applyBackdrop(image: BackdropImage | null): void {
       }).catch(() => {});
     }
   };
-  pre.onerror = () => {
-    layer.style.opacity = '0';
-    document.body.classList.remove('has-image');
-    credit.hidden = true;
-  };
+  pre.onerror = clear;
   pre.src = image.url;
 }

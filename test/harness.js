@@ -68,7 +68,7 @@ export const IDS = [
   'panelReset', 'piece', 'scrim', 'settings', 'time', 'weather'
 ];
 
-export function makeSandbox({ local = {}, fetchImpl } = {}) {
+export function makeSandbox({ local = {}, fetchImpl, preloadSucceeds = false } = {}) {
   const els = Object.fromEntries(IDS.map((id) => [id, mkEl()]));
   const raw = { ...local };
   const doc = {
@@ -89,7 +89,14 @@ export function makeSandbox({ local = {}, fetchImpl } = {}) {
       setItem: (k, v) => { raw[k] = String(v); },
       removeItem: (k) => { delete raw[k]; }
     },
-    Image: class { set src(v) { sandbox.preloaded.push(v); } },
+    Image: class {
+      set src(v) {
+        sandbox.preloaded.push(v);
+        // The real one fires this once the bytes are in. Tests that care about
+        // what lands in the CSS need it to.
+        if (sandbox.preloadSucceeds) queueMicrotask(() => this.onload?.());
+      }
+    },
     fetch: fetchImpl ?? (async () => ({ ok: false, status: 500 })),
     matchMedia: () => ({ matches: false }),
     DOMParser,
@@ -102,7 +109,7 @@ export function makeSandbox({ local = {}, fetchImpl } = {}) {
     devicePixelRatio: 1, innerWidth: 1440, innerHeight: 900,
     addEventListener: noop, removeEventListener: noop,
     HTMLElement: class {},
-    preloaded: [], raw
+    preloaded: [], preloadSucceeds, raw
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;

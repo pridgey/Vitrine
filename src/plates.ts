@@ -7,7 +7,14 @@
 /** A seeded source of 0..1. The same seed always draws the same figure. */
 export type Rng = () => number;
 
-/** What every plate is: hairlines in one ink, into a square of w by h. */
+/* What every plate is: hairlines in one ink, into a square of w by h.
+ *
+ * Three of the six take no seed, and that is on purpose rather than an
+ * oversight: phyllotaxis, rosette and vault each draw one specific thing —
+ * the golden angle, the real Earth–Venus resonance, a dome on pendentives —
+ * and jittering them would draw something that is not that thing. The other
+ * three depict a process rather than a figure, so they vary. Anything named
+ * _rng below is declining the seed, not forgetting it. */
 export type PlateFn = (
   ctx: CanvasRenderingContext2D,
   w: number,

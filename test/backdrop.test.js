@@ -57,3 +57,45 @@ test('the ambient ground fetches nothing and shows nothing', async () => {
   assert.equal(s.preloaded.length, 0);
   assert.equal(s.document.body.classList.contains('has-image'), false);
 });
+
+test('a quote in an image URL cannot break out of the CSS url()', async () => {
+  const hostile =
+    'https://i.redd.it/x.jpg"); position: fixed; inset: 0; background: red; --z: url("';
+
+  const s = await boot({
+    code,
+    preloadSucceeds: true,
+    local: {
+      'vitrine.settings': JSON.stringify({
+        feedMode: 'off', feeds: [], backdrop: 'custom', customImages: [hostile]
+      })
+    },
+    fetchImpl: async () => ({ ok: false, status: 500 })
+  });
+
+  const css = s.els.backdrop.style.backgroundImage;
+  assert.ok(css, 'the picture should still be hung');
+
+  /* The whole property has to stay one url() token holding one quoted string.
+     The injected words are still in there as text — `position: fixed` and the
+     rest — but inside a string that never closes they are just a silly URL,
+     which is the point. */
+  assert.match(css, /^url\("[^"]*"\)$/,
+    `one url() and no quote loose inside it — got ${css}`);
+  assert.match(css, /%22/, 'the quote should have been percent-encoded');
+});
+
+test('a well-formed image URL reaches the CSS unchanged', async () => {
+  const url = 'https://images.unsplash.com/photo-9?ixid=a%20b&w=2400&q=80&fm=jpg&fit=max';
+  const s = await boot({
+    code,
+    preloadSucceeds: true,
+    local: {
+      'vitrine.settings': JSON.stringify({
+        feedMode: 'off', feeds: [], backdrop: 'custom', customImages: [url]
+      })
+    },
+    fetchImpl: async () => ({ ok: false, status: 500 })
+  });
+  assert.equal(s.els.backdrop.style.backgroundImage, `url("${url}")`);
+});
