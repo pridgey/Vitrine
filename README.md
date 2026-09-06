@@ -387,7 +387,12 @@ still works. The weather line says so and the second card falls back to its
 last copy.
 
 Your settings, feed list, and place in the deck are kept in the browser's local
-storage on your own machine.
+storage on your own machine. Both the settings and the caches carry a shape
+number, so a version that changes what is stored falls back to its defaults
+rather than half-reading what the previous one wrote. If a new tab cannot draw
+at all, it throws the stored settings away and tries once more on the defaults:
+the way back to the settings panel is through the page, so a page that will not
+open is not allowed to be the end of it.
 
 ---
 

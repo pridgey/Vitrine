@@ -89,13 +89,68 @@ export const SIZE_SCALE: Record<SettingsData['size'], number> =
 export const VEIL_LEVEL: Record<SettingsData['veil'], number> =
   { light: 0.62, medium: 0.85, heavy: 1 };
 
+/* ── Reading what was stored ─────────────────────────────────── */
+
+/* Bumped when a setting changes shape, rather than when one is merely added.
+ * A blob written under a shape this version does not know is left alone and
+ * the defaults stand: spread over them it would half-apply, which looks like
+ * the extension being broken rather than like it being new. Gaining a key
+ * needs no bump — a key that is missing already falls back to its default.
+ *
+ * feeds.ts keeps a CACHE_SHAPE for the same reason. */
+const SETTINGS_SHAPE = 1;
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/* One feed, rebuilt from whatever was on disk. Returns null for anything that
+   is not recognisably a feed, so a bad entry is dropped rather than carried. */
+function asFeed(v: unknown): Feed | null {
+  if (!isPlainObject(v)) return null;
+  const { url, name, imagesOnly } = v;
+  if (typeof url !== 'string' || !url) return null;
+  return {
+    url,
+    name: typeof name === 'string' ? name : '',
+    imagesOnly: imagesOnly === true
+  };
+}
+
+const readFeeds = (v: unknown): Feed[] =>
+  (Array.isArray(v) ? v : []).map(asFeed).filter((f): f is Feed => f !== null);
+
+/* On disk this is { shape, data }. Versions before the marker existed wrote
+   the settings object flat, with no wrapper; that is read as the current
+   shape, because nothing about the settings themselves changed when the
+   wrapper was introduced. */
+function readStored(): Record<string, unknown> {
+  const raw = store.get<unknown>('settings', null);
+  if (!isPlainObject(raw)) return {};
+
+  if (typeof raw.shape === 'number') {
+    if (raw.shape !== SETTINGS_SHAPE) return {};
+    return isPlainObject(raw.data) ? raw.data : {};
+  }
+  return raw;                                    // flat, written before the marker
+}
+
+const stored = readStored();
+
+/* ── The settings themselves ─────────────────────────────────── */
+
 /* '*' means everything changed at once — a reset. Anything watching should
    redraw the lot rather than trying to work out what moved. */
 export type SettingsKey = keyof SettingsData;
 type Watcher = (key: SettingsKey | '*') => void;
 
 export const Settings = {
-  data: { ...DEFAULTS, ...store.get<Partial<SettingsData>>('settings', {}) },
+  /* Stored values are taken at their word, with one exception. A wrong value
+     in any other key degrades quietly — a bad `size` falls through the guard
+     in applyLayout, a bad `periodHours` still lands on a piece — but a `feeds`
+     that is not an array of feeds is mapped over before the first paint and
+     takes the whole page down, settings panel included. So feeds is rebuilt
+     and the rest is trusted. The cast below is that decision, written down. */
+  data: { ...DEFAULTS, ...stored, feeds: readFeeds(stored.feeds) } as SettingsData,
   listeners: [] as Watcher[],
 
   get<K extends SettingsKey>(key: K): SettingsData[K] {
@@ -104,7 +159,7 @@ export const Settings = {
 
   set<K extends SettingsKey>(key: K, value: SettingsData[K]): void {
     this.data[key] = value;
-    store.set('settings', this.data);
+    this.save();
     this.listeners.forEach((fn) => fn(key));
   },
 
@@ -112,7 +167,11 @@ export const Settings = {
 
   reset(): void {
     this.data = { ...DEFAULTS };
-    store.set('settings', this.data);
+    this.save();
     this.listeners.forEach((fn) => fn('*'));
+  },
+
+  save(): void {
+    store.set('settings', { shape: SETTINGS_SHAPE, data: this.data });
   }
 };

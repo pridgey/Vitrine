@@ -695,6 +695,10 @@ async function refreshFeeds(
   render({ force: true });
 }
 
+/* Whether the page's controls have been connected. Kept outside start() so a
+   second run reconnects nothing. */
+let wired = false;
+
 function start(): void {
   // One tick of the tab counter per page load, before anything renders.
   tabCount = store.get('tabSeq', 0) + 1;
@@ -723,6 +727,12 @@ function start(): void {
   void refreshBackdrop({ settle: true });
 
   const hooks: PanelHooks = { refreshFeeds, testBackdrop };
+
+  /* Everything above can be run twice — see the boot at the foot of the file.
+     Everything below cannot: a second set of click handlers would make the
+     ↻ button skip two pieces at a time. */
+  if (wired) return;
+  wired = true;
 
   $('piece').addEventListener('click', openNote);
   $('piece').addEventListener('keydown', (e) => {
@@ -808,4 +818,19 @@ function start(): void {
   }, 60000);
 }
 
-document.addEventListener('DOMContentLoaded', start);
+/* A new tab that will not draw is one the reader cannot get out of: the
+   settings panel is behind the same start() that just failed, so there is no
+   way in to undo whatever caused it. Anything thrown on the way up therefore
+   costs the stored settings rather than the page — once. If the defaults will
+   not start either, the fault is not in what was stored, and the second throw
+   is left to the console rather than turned into a loop. */
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    start();
+  } catch (e) {
+    console.error('Vitrine could not start on the stored settings.', e);
+    Settings.reset();
+    store.set('skip', 0);
+    start();
+  }
+});
