@@ -3,19 +3,53 @@
  * Fetches RSS and Atom, keeps the last good result, and hands back a flat
  * list of items. Deliberately forgiving: a feed that breaks is dropped
  * quietly rather than taking the page down with it.
+ *
+ * Everything here parses something somebody else wrote, so the shapes below
+ * describe what we hope for rather than what we are promised. The casts at
+ * each fetch are the one place that hope is admitted; past them, a missing
+ * field is a type error rather than a surprise.
  */
+
+import { store, looksLikeImage } from './base.js';
+import type { Feed } from './settings.js';
+
+/** One entry out of a feed, flattened to what the page actually shows. */
+export interface FeedItem {
+  title: string;
+  link: string;
+  /** The feed's own title, or the name the reader gave it. */
+  source: string;
+  /** Epoch ms, or 0 where the feed sent no date. */
+  at: number;
+  /** A trimmed summary. Empty on a looking feed, where the picture says it. */
+  blurb: string;
+  image: string | null;
+  imageOnly: boolean;
+  /** The crop the feed definitely sent, where `image` is an upgrade on it. */
+  imageAlt?: string;
+  /** Every picture in the post, where it holds more than one. */
+  images?: string[];
+  /** A Reddit gallery id, if the rest of the post has to be asked for. */
+  gallery?: string;
+}
+
+/** A picture, and the crop to fall back on if it will not load. */
+export interface Shot {
+  u: string;
+  alt?: string;
+}
 
 const FEED_MAX_AGE = 30 * 60 * 1000;   // refetch after half an hour
 const PER_FEED     = 12;               // items kept from each feed
 const SCAN_MAX     = 60;               // items read through to find that many
 
 /* Paste a subreddit and get the feed. Same for a few other common shapes. */
-function normaliseFeedUrl(input) {
+export function normaliseFeedUrl(input: string): string | null {
   let url = input.trim();
   if (!url) return null;
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
 
-  let u;
+  let u: URL;
   try { u = new URL(url); } catch { return null; }
   // Reddit redirects the bare domain to www, and a redirect across origins
   // loses the host permission that made the request privileged. Go straight
@@ -40,7 +74,7 @@ function normaliseFeedUrl(input) {
 
 /* A fetch may be redirected between the apex domain and www. Chrome checks
  * permission against the redirect target too, so hold both. */
-function originVariants(url) {
+function originVariants(url: string): string[] {
   try {
     const u = new URL(url);
     const bare = u.hostname.replace(/^www\./i, '');
@@ -54,7 +88,7 @@ function originVariants(url) {
 
 /* Do we already hold it? Asked where a prompt would be out of place — a
  * gallery opening is not the moment to put a dialog over the page. */
-async function hasFeedPermission(url) {
+export async function hasFeedPermission(url: string): Promise<boolean> {
   const origins = originVariants(url);
   if (!origins.length) return false;
   if (typeof chrome === 'undefined' || !chrome.permissions) return true;  // preview
@@ -63,7 +97,7 @@ async function hasFeedPermission(url) {
 }
 
 /* Extension pages can fetch anywhere they hold permission for. Ask first. */
-async function ensureFeedPermission(url) {
+export async function ensureFeedPermission(url: string): Promise<boolean> {
   const origins = originVariants(url);
   if (!origins.length) return false;
   if (typeof chrome === 'undefined' || !chrome.permissions) return true;  // preview
@@ -75,18 +109,19 @@ async function ensureFeedPermission(url) {
   }
 }
 
-const text = (node, sel) => {
-  const el = node.querySelector(sel);
-  return el ? el.textContent.trim() : '';
+const text = (node: ParentNode, sel: string): string => {
+  const found = node.querySelector(sel);
+  return found?.textContent ? found.textContent.trim() : '';
 };
 
 /* Parsed rather than assigned to a live element: setting innerHTML on even a
  * detached div starts a download for every image in it, which for a feed of
  * two dozen picture posts is two dozen requests nobody asked for. A document
  * from DOMParser is inert. */
-const inert = (html) => new DOMParser().parseFromString(html, 'text/html');
+const inert = (html: string): Document =>
+  new DOMParser().parseFromString(html, 'text/html');
 
-function strip(html) {
+function strip(html: string): string {
   const d = inert(html);
   return (d.body.textContent || '').replace(/\s+/g, ' ').trim();
 }
@@ -105,7 +140,7 @@ const PLACEHOLDER = /^(self|default|nsfw|spoiler|image)$/i;
  * other people's pages, and there is no original of ours behind those. */
 const REDD_FILE = /^\/[A-Za-z0-9_-]+\.(png|jpe?g|webp|gif)$/i;
 
-function fullSize(url) {
+function fullSize(url: string): string {
   try {
     const u = new URL(url);
     if (!/^preview\.redd\.it$/i.test(u.hostname)) return url;
@@ -117,16 +152,16 @@ function fullSize(url) {
 /* A picture and, where it came from an upgrade like that, the one it replaced.
  * Reddit will not have an original behind every preview — the poster frame of a
  * video, for one — so the crop that was definitely there stays as a fallback. */
-const shot = (u, alt) => (alt && alt !== u ? { u, alt } : { u });
+const shot = (u: string, alt?: string): Shot => (alt && alt !== u ? { u, alt } : { u });
 
-function pickImages(node, html, link) {
-  const candidates = [];
+function pickImages(node: Element, html: string, link: string): string[] {
+  const candidates: string[] = [];
 
-  for (const el of node.getElementsByTagName('*')) {
-    const tag = el.localName;
+  for (const node2 of node.getElementsByTagName('*')) {
+    const tag = node2.localName;
     if (tag === 'thumbnail' || tag === 'content' || tag === 'enclosure') {
-      const u = el.getAttribute('url') || el.getAttribute('href') || '';
-      const type = el.getAttribute('type') || '';
+      const u = node2.getAttribute('url') || node2.getAttribute('href') || '';
+      const type = node2.getAttribute('type') || '';
       if (u && (looksLikeImage(u) || type.startsWith('image/'))) candidates.push(u);
     }
   }
@@ -160,9 +195,15 @@ function pickImages(node, html, link) {
  * loadGallery, which does not run until a sheet is actually opened. */
 const GALLERY_RE = /reddit\.com\/gallery\/([A-Za-z0-9]+)/;
 
-function galleryId(html, link) {
+function galleryId(html: string, link: string): string | null {
   const m = GALLERY_RE.exec(link || '') || GALLERY_RE.exec(html || '');
-  return m ? m[1] : null;
+  return m?.[1] ?? null;
+}
+
+/** What a feed turned out to be called, and what was in it. */
+export interface ParsedFeed {
+  source: string;
+  items: FeedItem[];
 }
 
 /* An image-only feed is one where the pictures are the point — a subreddit
@@ -171,7 +212,11 @@ function galleryId(html, link) {
  * rather than however many of its first dozen happened to be photographs.
  * Reading deeper costs something — every body is parsed to look for a picture
  * in it — so the search stops at SCAN_MAX however few it has found. */
-function parseFeed(xml, sourceUrl, { imagesOnly = false } = {}) {
+export function parseFeed(
+  xml: string,
+  sourceUrl: string,
+  { imagesOnly = false }: { imagesOnly?: boolean } = {}
+): ParsedFeed | null {
   const doc = new DOMParser().parseFromString(xml, 'application/xml');
   if (doc.querySelector('parsererror')) return null;
 
@@ -186,7 +231,7 @@ function parseFeed(xml, sourceUrl, { imagesOnly = false } = {}) {
   let items = nodes.map((n) => {
     let link = '';
     const linkEl = n.querySelector('link');
-    if (linkEl) link = linkEl.getAttribute('href') || linkEl.textContent.trim();
+    if (linkEl) link = linkEl.getAttribute('href') || (linkEl.textContent ?? '').trim();
     if (!link) link = text(n, 'guid');
 
     const when = text(n, 'pubDate') || text(n, 'updated') || text(n, 'published');
@@ -197,7 +242,7 @@ function parseFeed(xml, sourceUrl, { imagesOnly = false } = {}) {
       ? [...new Set(small.map(fullSize))]
       : small;
 
-    const item = {
+    const item: FeedItem = {
       title: strip(text(n, 'title')) || '(untitled)',
       link,
       source,
@@ -234,23 +279,33 @@ function parseFeed(xml, sourceUrl, { imagesOnly = false } = {}) {
  * feature being broken. */
 const CACHE_SHAPE = 2;
 
-const feedKey = (feeds) =>
+const feedKey = (feeds: readonly Feed[]): string =>
   CACHE_SHAPE + '|' +
   feeds.map((f) => f.url + (f.imagesOnly ? '#images' : '')).join('|');
 
 /* The last good fetch, read straight out of storage. The new tab primes itself
  * with this so the first paint already knows whether feeds are running,
  * instead of putting up a piece and swapping it a moment later. */
-function cachedFeedItems(feeds) {
+/** What the cache holds between tabs: one fetch, and when it happened. */
+interface FeedCache {
+  at: number;
+  key: string;
+  items: FeedItem[];
+}
+
+export function cachedFeedItems(feeds: readonly Feed[]): FeedItem[] {
   if (!feeds.length) return [];
-  const cache = store.get('feedCache', null);
+  const cache = store.get<FeedCache | null>('feedCache', null);
   return cache && cache.key === feedKey(feeds) ? cache.items : [];
 }
 
-async function loadFeeds(feeds, { force = false } = {}) {
+export async function loadFeeds(
+  feeds: readonly Feed[],
+  { force = false }: { force?: boolean } = {}
+): Promise<FeedItem[]> {
   if (!feeds.length) return [];
 
-  const cache = store.get('feedCache', null);
+  const cache = store.get<FeedCache | null>('feedCache', null);
   const key = feedKey(feeds);
 
   if (!force && cache && cache.key === key &&
@@ -290,31 +345,37 @@ async function loadFeeds(feeds, { force = false } = {}) {
  * goes to the whole post. */
 const GALLERY_KEEP = 80;        // remembered posts before the oldest are let go
 
-function galleryFrom(json) {
-  const post = json && json[0] && json[0].data && json[0].data.children &&
-               json[0].data.children[0] && json[0].data.children[0].data;
+/* As much of Reddit's comments payload as the viewer needs. */
+interface RedditImage { u?: string; gif?: string }
+interface RedditMedia { status?: string; s?: RedditImage; p?: RedditImage[] }
+interface RedditPost {
+  gallery_data?: { items?: { media_id: string }[] };
+  media_metadata?: Record<string, RedditMedia | undefined>;
+}
+type RedditComments = [{ data?: { children?: { data?: RedditPost }[] } }?];
+
+function galleryFrom(json: RedditComments): Shot[] | null {
+  const post = json[0]?.data?.children?.[0]?.data;
   if (!post) return null;
 
-  const order = (post.gallery_data && post.gallery_data.items) || [];
-  const meta = post.media_metadata || {};
+  const order = post.gallery_data?.items ?? [];
+  const meta = post.media_metadata ?? {};
 
-  const urls = order.map((it) => {
+  const urls = order.map((it): Shot | null => {
     const m = meta[it.media_id];
     if (!m || (m.status && m.status !== 'valid')) return null;
     // s is the image at its own size; p is a ladder of previews, largest last.
-    const s = m.s || {};
-    const previews = m.p || [];
-    const best = s.u || s.gif || (previews.length ? previews[previews.length - 1].u : null);
+    const best = m.s?.u || m.s?.gif || m.p?.at(-1)?.u;
     return best ? shot(fullSize(best), best) : null;
-  }).filter(Boolean);
+  }).filter((s): s is Shot => s !== null);
 
   return urls.length ? urls : null;
 }
 
-async function loadGallery(id) {
+export async function loadGallery(id: string | null): Promise<Shot[] | null> {
   if (!id) return null;
 
-  const seen = store.get('galleries', {});
+  const seen = store.get<Record<string, Shot[]>>('galleries', {});
   if (seen[id]) return seen[id];
 
   const url = `https://www.reddit.com/comments/${id}.json?raw_json=1`;
@@ -323,10 +384,10 @@ async function loadGallery(id) {
   try {
     const res = await fetch(url);
     if (!res.ok) return null;
-    const urls = galleryFrom(await res.json());
+    const urls = galleryFrom((await res.json()) as RedditComments);
     if (!urls) return null;
 
-    const next = { ...seen, [id]: urls };
+    const next: Record<string, Shot[]> = { ...seen, [id]: urls };
     for (const old of Object.keys(next).slice(0, -GALLERY_KEEP)) delete next[old];
     store.set('galleries', next);
     return urls;
@@ -337,10 +398,11 @@ async function loadGallery(id) {
 
 /* What we already know about a post, without asking anyone. The cue under the
  * piece uses this to say how many pictures are in there. */
-const knownGallery = (id) => (id ? store.get('galleries', {})[id] || null : null);
+export const knownGallery = (id: string | null | undefined): Shot[] | null =>
+  (id ? store.get<Record<string, Shot[]>>('galleries', {})[id] ?? null : null);
 
 /* "4h ago", "yesterday", "12 Mar" */
-function ago(ts) {
+export function ago(ts: number): string {
   if (!ts) return '';
   const mins = Math.round((Date.now() - ts) / 60000);
   if (mins < 2) return 'just now';

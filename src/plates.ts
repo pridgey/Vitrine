@@ -2,10 +2,21 @@
  *
  * Each function draws one figure into a canvas context, in hairlines,
  * on a transparent ground. Nothing here touches the network.
- * Signature: (ctx, w, h, ink, rng) where rng() returns 0..1.
  */
 
-function mulberry32(a) {
+/** A seeded source of 0..1. The same seed always draws the same figure. */
+export type Rng = () => number;
+
+/** What every plate is: hairlines in one ink, into a square of w by h. */
+export type PlateFn = (
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  ink: string,
+  rng: Rng
+) => void;
+
+export function mulberry32(a: number): Rng {
   return function () {
     a |= 0; a = (a + 0x6D2B79F5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
@@ -14,15 +25,26 @@ function mulberry32(a) {
   };
 }
 
-function alpha(hex, a) {
+/** '#4E7C6E' at some opacity, as a colour the canvas will take. */
+export function alpha(hex: string, a: number): string {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }
 
-const PLATES = {
+/* A point, and a segment between two of them. Tuples rather than arrays, so
+   p[0] is a number and not a number-or-nothing. */
+type Pt = [number, number];
+type Seg = [Pt, Pt];
+
+/* One of a list, chosen by the seed. The list is a non-empty tuple, so there
+   is always something to fall back on and no assertion is needed. */
+const choose = <T,>(list: readonly [T, ...T[]], rng: Rng): T =>
+  list[Math.floor(rng() * list.length)] ?? list[0];
+
+export const PLATES = {
 
   /* Seeds placed one golden angle apart. */
-  phyllotaxis(ctx, w, h, ink, rng) {
+  phyllotaxis(ctx: CanvasRenderingContext2D, w: number, h: number, ink: string, _rng: Rng): void {
     const cx = w / 2, cy = h / 2;
     const R = Math.min(w, h) * 0.44;
     const n = 1100;
@@ -61,13 +83,14 @@ const PLATES = {
   },
 
   /* Sand settling on the still lines of a vibrating plate. */
-  chladni(ctx, w, h, ink, rng) {
+  chladni(ctx: CanvasRenderingContext2D, w: number, h: number, ink: string, rng: Rng): void {
     const size = Math.min(w, h) * 0.82;
     const x0 = (w - size) / 2, y0 = (h - size) / 2;
-    const pairs = [[3, 7], [4, 9], [2, 5], [5, 8], [3, 10], [6, 7]];
-    const [m, n] = pairs[Math.floor(rng() * pairs.length)];
+    const pairs: readonly [Pt, ...Pt[]] =
+      [[3, 7], [4, 9], [2, 5], [5, 8], [3, 10], [6, 7]];
+    const [m, n] = choose(pairs, rng);
 
-    const f = (x, y) =>
+    const f = (x: number, y: number): number =>
       Math.cos(n * Math.PI * x) * Math.cos(m * Math.PI * y) -
       Math.cos(m * Math.PI * x) * Math.cos(n * Math.PI * y);
 
@@ -90,7 +113,7 @@ const PLATES = {
   },
 
   /* The Earth–Venus line, drawn with the Earth held still. */
-  rosette(ctx, w, h, ink, rng) {
+  rosette(ctx: CanvasRenderingContext2D, w: number, h: number, ink: string, _rng: Rng): void {
     const cx = w / 2, cy = h / 2;
     const S = Math.min(w, h) * 0.255;
     const Re = 1.000, Rv = 0.7233;
@@ -102,20 +125,20 @@ const PLATES = {
     // closer the two planets are, which brings the five retrograde loops
     // forward and lets the far sweeps fall back.
     const BANDS = 7;
-    const bands = Array.from({ length: BANDS }, () => []);
-    let prev = null;
+    const bands: Seg[][] = Array.from({ length: BANDS }, () => []);
+    let prev: Pt | null = null;
 
     for (let i = 0; i <= steps; i++) {
       const t = (i / steps) * years;
       const x = Rv * Math.cos(wv * t) - Re * Math.cos(we * t);
       const y = Rv * Math.sin(wv * t) - Re * Math.sin(we * t);
-      const p = [cx + x * S, cy + y * S];
+      const p: Pt = [cx + x * S, cy + y * S];
 
       if (prev) {
         const r = Math.hypot(x, y);
         const closeness = 1 - (r - near) / (far - near);
         const b = Math.min(BANDS - 1, Math.floor(closeness * closeness * BANDS));
-        bands[b].push([prev, p]);
+        bands[b]?.push([prev, p]);
       }
       prev = p;
     }
@@ -147,7 +170,7 @@ const PLATES = {
   },
 
   /* Beds laid flat, tilted, planed off, and buried again. */
-  strata(ctx, w, h, ink, rng) {
+  strata(ctx: CanvasRenderingContext2D, w: number, h: number, ink: string, rng: Rng): void {
     const x0 = w * 0.08, x1 = w * 0.92;
     const top = h * 0.10, bottom = h * 0.90;
     const surface = h * 0.52;
@@ -206,7 +229,7 @@ const PLATES = {
   /* Getting a round dome onto a square room.
    * One sphere, sliced by the four walls. What is left over in the
    * corners is the pendentive; what is left over on top is the dome. */
-  vault(ctx, w, h, ink, rng) {
+  vault(ctx: CanvasRenderingContext2D, w: number, h: number, ink: string, _rng: Rng): void {
     const cx = w / 2;
     const half = Math.min(w, h) * 0.235;    // half the side of the room
     const base = h * 0.88;
@@ -215,7 +238,9 @@ const PLATES = {
     const cornice = spring - half;          // exactly the crown of the arches
     const corniceHalf = half;              // the square's inscribed circle
 
-    const line = (a, lw) => { ctx.strokeStyle = alpha(ink, a); ctx.lineWidth = lw; };
+    const line = (a: number, lw: number): void => {
+      ctx.strokeStyle = alpha(ink, a); ctx.lineWidth = lw;
+    };
 
     // Ground and piers.
     line(0.5, 1.3);
@@ -269,10 +294,13 @@ const PLATES = {
   },
 
   /* The cheapest way to connect a point to a volume. */
-  ramify(ctx, w, h, ink, rng) {
+  ramify(ctx: CanvasRenderingContext2D, w: number, h: number, ink: string, rng: Rng): void {
     const trunk = Math.min(w, h) * 0.20;
 
-    function branch(x, y, ang, len, width, depth) {
+    function branch(
+      x: number, y: number, ang: number,
+      len: number, width: number, depth: number
+    ): void {
       if (depth > 9 || len < 2.4) return;
       const x2 = x + Math.cos(ang) * len;
       const y2 = y + Math.sin(ang) * len;
@@ -299,4 +327,7 @@ const PLATES = {
 
     branch(w / 2, h * 0.94, -Math.PI / 2, trunk, 3.4, 0);
   }
-};
+} satisfies Record<string, PlateFn>;
+
+/** Which figures exist. A piece naming one that does not is a build error. */
+export type PlateName = keyof typeof PLATES;

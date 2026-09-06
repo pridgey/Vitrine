@@ -3,20 +3,16 @@
  * Each piece is one of three kinds:
  *   note     an idea to chew on, written out
  *   passage  a short quotation from the public domain
- *   plate    a figure drawn live by js/plates.js
+ *   plate    a figure drawn live by src/plates.ts
  *
- * Fields:
- *   lead   what appears large, under the glass
- *   label  the wall label: field/attribution, and a date
- *   note   the longer text revealed when you click through
- *   link   somewhere to go next
- *   tint   the colour the ambient ground takes on for this piece
- *
- * To add your own: copy any object below, change the words, save,
- * and reload the extension. Nothing else needs to change.
+ * To add your own: copy any object below, change the words, save, and run the
+ * build. The compiler will tell you if you have missed a field or named a
+ * plate that does not exist.
  */
 
-const TINT = {
+import type { PlateName } from './plates.js';
+
+export const TINT = {
   verdigris: '#4E7C6E',
   oxblood:   '#8A3B36',
   indigo:    '#3C4A7A',
@@ -25,9 +21,49 @@ const TINT = {
   violet:    '#6A5B84',
   teal:      '#2F6B78',
   rust:      '#9A5A2C'
-};
+} as const;
 
-const PIECES = [
+/** The colour the ambient ground takes on behind a piece. */
+export type Tint = (typeof TINT)[keyof typeof TINT];
+
+/** The wall label: the field or attribution, and a date where there is one. */
+export interface Label {
+  field: string;
+  date: string;
+}
+
+/** Somewhere to go next. */
+export interface Link {
+  text: string;
+  url: string;
+}
+
+interface PieceBase {
+  /** What appears large, under the glass. */
+  lead: string;
+  label: Label;
+  /** The longer text revealed on clicking through. */
+  note: string;
+  link: Link;
+  tint: Tint;
+}
+
+/** An idea to chew on, or a quotation. Words either way. */
+export interface TextPiece extends PieceBase {
+  kind: 'note' | 'passage';
+}
+
+/** A figure drawn live into a canvas, named by its function in PLATES. */
+export interface PlatePiece extends PieceBase {
+  kind: 'plate';
+  draw: PlateName;
+}
+
+/** Anything out of the bundled collection. */
+export type CollectionPiece = TextPiece | PlatePiece;
+
+/* A non-empty tuple, so indexing it always has something to fall back on. */
+export const PIECES: readonly [CollectionPiece, ...CollectionPiece[]] = [
 
   /* ── Notes ────────────────────────────────────────────────── */
 

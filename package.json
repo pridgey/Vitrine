@@ -1,0 +1,21 @@
+{
+  "name": "vitrine",
+  "version": "1.1.0",
+  "description": "One curated piece under glass on every new tab, with an optional second card from your own feeds.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch",
+    "check": "tsc --noEmit",
+    "test": "node build.js && node --test test/",
+    "clean": "rm -rf dist",
+    "package": "npm run check && npm run build -- --minify && cd dist && zip -qr ../vitrine-$npm_package_version.zip . && echo \"wrote vitrine-$npm_package_version.zip\""
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "esbuild": "^0.24.0",
+    "jsdom": "^30.0.1",
+    "typescript": "^5.7.0"
+  }
+}

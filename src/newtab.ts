@@ -5,49 +5,92 @@
  * bundled collection; once feeds are running the collection steps back and
  * takes one slot in five. Both change on a timer, and both can be pushed
  * along by hand.
+ *
+ * This module is the entry point: the bundle Chrome loads is this file and
+ * everything it imports.
  */
 
-const WX_MAX_AGE = 20 * 60 * 1000;   // how long a weather reading keeps
+import { $, el, store, mod } from './base.js';
+import { PIECES, TINT } from './pieces.js';
+import type { CollectionPiece, PlatePiece, Tint, Label, Link } from './pieces.js';
+import { PLATES, mulberry32 } from './plates.js';
+import { Settings, SIZE_SCALE, VEIL_LEVEL } from './settings.js';
+import type { Cadence } from './settings.js';
+import { ago, cachedFeedItems, loadFeeds, loadGallery, knownGallery, normaliseFeedUrl } from './feeds.js';
+import type { FeedItem, Shot } from './feeds.js';
+import {
+  applyBackdrop, backdropUp, cachedBackdropPool, loadBackdropPool, pickFromPool
+} from './backdrop.js';
+import type { BackdropImage } from './backdrop.js';
+import { loadWeather } from './weather.js';
+import { buildPanel, closePanel, openPanel, panelIsOpen } from './panel.js';
+import type { BackdropTest, PanelHooks } from './panel.js';
 
-let feedItems = [];
+/* One item out of a feed, dressed as something the glass can show. It carries
+   the media fields the collection pieces have no use for. */
+export interface FeedPiece {
+  kind: 'feed';
+  lead: string;
+  label: Label;
+  note: string;
+  link: Link;
+  tint: Tint;
+  /** The headline again, used as the caption under a looking feed's pictures. */
+  caption: string;
+  image: string | null;
+  imageAlt: string | null;
+  /** Whether the sheet opens onto pictures rather than onto words. */
+  viewer: boolean;
+  images: string[] | null;
+  gallery: string | null;
+}
+
+/** Anything the glass can show. */
+type Piece = CollectionPiece | FeedPiece;
+
+let feedItems: FeedItem[] = [];
 
 /* ── Which piece is on show ─────────────────────────────────── */
 
-const mod = (a, n) => ((a % n) + n) % n;
-
-function gcd(a, b) { while (b) { [a, b] = [b, a % b]; } return a; }
+function gcd(a: number, b: number): number {
+  while (b) { [a, b] = [b, a % b]; }
+  return a;
+}
 
 // A stride near the golden ratio, coprime with the collection size, so
 // stepping through it visits every piece before repeating any.
-function strideFor(n) {
+function strideFor(n: number): number {
   let s = Math.max(1, Math.round(n * 0.6180339887));
   while (gcd(s, n) !== 1) s++;
   return s;
 }
 
-/* Counts up once per new tab, so anything set to 'tab' moves on every load. */
-const tabSeq = () => window.__tabSeq || 0;
-const skip   = () => store.get('skip', 0);
+/* Counts up once per new tab, so anything set to 'tab' moves on every load.
+   Set once by start(), before anything renders. */
+let tabCount = 0;
+
+const tabSeq = (): number => tabCount;
+const skip   = (): number => store.get('skip', 0);
 
 /* Each of the three things on screen keeps its own clock. A cadence is
    either a number of hours or the string 'tab'. */
-function slotFor(cadence) {
+function slotFor(cadence: Cadence): number {
   if (cadence === 'tab') return tabSeq();
   return Math.floor(Date.now() / (cadence * 60 * 60 * 1000));
 }
 
-const slotNow = () => slotFor(Settings.get('periodHours'));
+const slotNow = (): number => slotFor(Settings.get('periodHours'));
 
 /* Feed items borrow a tint from their source name, so a given subreddit
    always lights the ground the same colour. */
-const TINT_LIST = Object.values(TINT);
-function tintFor(name) {
+const TINT_LIST: readonly Tint[] = Object.values(TINT);
+function tintFor(name: string): Tint {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
-  return TINT_LIST[Math.abs(h) % TINT_LIST.length];
+  return TINT_LIST[Math.abs(h) % TINT_LIST.length] ?? TINT.verdigris;
 }
 
-function feedAsPiece(item) {
+function feedAsPiece(item: FeedItem): FeedPiece {
   // An item from a looking feed has no summary by design. Its sheet opens as
   // the pictures themselves, with the headline under them as their caption.
   const note = item.imageOnly
@@ -81,16 +124,25 @@ function feedAsPiece(item) {
    wearing out. */
 const PIECE_EVERY = 5;
 
-const feedsLive = () =>
+const feedsLive = (): boolean =>
   Settings.get('feedMode') !== 'off' && feedItems.length > 0;
 
 /* What the main slot shows. Returns the thing itself, a key that changes only
    when the thing does, and which feed item was spent — the second card needs
    to know, so as not to show the same item twice. */
-function selection(slot) {
-  const fromCollection = (ord) => {
+/** What the main slot shows, and what it cost. */
+interface Selection {
+  piece: Piece;
+  /** Changes only when the thing on show does. */
+  key: string;
+  /** Which feed item was spent, or -1 for a collection piece. */
+  feedIndex: number;
+}
+
+function selection(slot: number): Selection {
+  const fromCollection = (ord: number): Selection => {
     const i = mod(ord * strideFor(PIECES.length), PIECES.length);
-    return { piece: PIECES[i], key: 'p' + i, feedIndex: -1 };
+    return { piece: PIECES[i] ?? PIECES[0], key: 'p' + i, feedIndex: -1 };
   };
 
   if (!feedsLive()) return fromCollection(slot);
@@ -104,15 +156,18 @@ function selection(slot) {
   // Feed slots walk the list in time order rather than striding, so a run of
   // new tabs reads as newest-first rather than scattered.
   const i = mod(slot - Math.floor(slot / PIECE_EVERY) - 1, feedItems.length);
+  const item = feedItems[i];
+  if (!item) return fromCollection(slot);      // feedsLive() says this cannot happen
+
   return {
-    piece: feedAsPiece(feedItems[i]),
-    key: 'f' + feedItems[i].link,
+    piece: feedAsPiece(item),
+    key: 'f' + item.link,
     feedIndex: i
   };
 }
 
 /* The second card walks in time order too, on its own clock. */
-function companionIndex(n, avoid = -1) {
+function companionIndex(n: number, avoid = -1): number {
   const cadence = Settings.get('feedCadence');
   const slot = (cadence === 'tab' ? tabSeq() : slotNow()) + skip();
   const i = mod(slot, n);
@@ -123,11 +178,11 @@ function companionIndex(n, avoid = -1) {
 
 /* The second card only earns its space if there is an item left over for it.
    When the main slot has already spent one, that takes a second. */
-const companionShowing = (mainFeedIndex = -1) =>
+const companionShowing = (mainFeedIndex = -1): boolean =>
   Settings.get('feedMode') === 'companion' &&
   feedItems.length > (mainFeedIndex >= 0 ? 1 : 0);
 
-function drawPlate(piece, seed) {
+function drawPlate(piece: PlatePiece, seed: number): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   // The second card needs room, so the figure gives some back.
@@ -140,10 +195,10 @@ function drawPlate(piece, seed) {
   canvas.height = Math.round(css * dpr);
 
   const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-
-  const draw = PLATES[piece.draw];
-  if (draw) draw(ctx, css, css, piece.tint, mulberry32(seed));
+  if (ctx) {
+    ctx.scale(dpr, dpr);
+    PLATES[piece.draw](ctx, css, css, piece.tint, mulberry32(seed));
+  }
   return canvas;
 }
 
@@ -158,8 +213,19 @@ function drawPlate(piece, seed) {
 const AR_MIN = 0.5;                // taller than 1:2 is not a photograph
 const AR_MAX = 2.6;
 
-function mountImage(img, src, opts) {
-  const { band = false, upto = 0, fallback = null, onFail = () => {} } = opts || {};
+/** How a picture should behave once its real proportions are known. */
+interface MountOpts {
+  /** Ease the frame from a holding 3:2 to the picture's own shape. */
+  band?: boolean;
+  /** Show it at up to this multiple of its own pixels, rather than filling. */
+  upto?: number;
+  /** A crop to try if the full-size ask comes back empty. */
+  fallback?: string | null;
+  onFail?: () => void;
+}
+
+function mountImage(img: HTMLImageElement, src: string, opts?: MountOpts): void {
+  const { band = false, upto = 0, fallback = null, onFail = () => {} } = opts ?? {};
 
   img.alt = '';
   img.decoding = 'async';
@@ -167,8 +233,8 @@ function mountImage(img, src, opts) {
 
   img.onload = () => {
     const { naturalWidth: w, naturalHeight: h } = img;
-    if (band && w && h) {
-      const figure = img.parentElement;
+    const figure = img.parentElement;
+    if (band && w && h && figure) {
       const ratio = Math.min(AR_MAX, Math.max(AR_MIN, w / h));
       figure.style.setProperty('--ar', ratio.toFixed(4));
       // A feed will happily hand over a 140px thumbnail. Enlarged to the
@@ -202,9 +268,9 @@ function mountImage(img, src, opts) {
 
 /* What the sheet will open onto. The piece on screen is the piece the note is
    about, so the two need not be worked out twice. */
-let showing = null;
+let showing: Piece | null = null;
 
-function show(piece, seed) {
+function show(piece: Piece, seed: number): void {
   showing = piece;
   document.documentElement.style.setProperty('--tint', piece.tint);
   document.body.classList.add('lit');
@@ -217,7 +283,8 @@ function show(piece, seed) {
     object.append(drawPlate(piece, seed));
     object.append(el('div', 'plate-title', piece.lead));
   } else {
-    if (piece.image) {
+    // Only a feed item carries a picture; a note or a passage is words.
+    if (piece.kind === 'feed' && piece.image) {
       const figure = el('span', 'figure');
       const img = document.createElement('img');
       img.className = 'feed-image';
@@ -245,7 +312,9 @@ function show(piece, seed) {
   $('noteBody').replaceChildren(...paras.map((para) => el('p', null, para)));
   // A looking feed's item has no note. Its headline goes under the pictures
   // instead, as their caption.
-  if (piece.caption) $('noteBody').append(el('p', 'note-caption', piece.caption));
+  if (piece.kind === 'feed' && piece.caption) {
+    $('noteBody').append(el('p', 'note-caption', piece.caption));
+  }
 
   const link = $('noteLink');
   if (piece.link) {
@@ -259,7 +328,7 @@ function show(piece, seed) {
 
 /* ── The second card ────────────────────────────────────────── */
 
-function showCompanion(mainFeedIndex = -1) {
+function showCompanion(mainFeedIndex = -1): void {
   const card = $('companion');
   const on = companionShowing(mainFeedIndex);
 
@@ -267,6 +336,8 @@ function showCompanion(mainFeedIndex = -1) {
   if (!on) return;
 
   const item = feedItems[companionIndex(feedItems.length, mainFeedIndex)];
+  if (!item) { card.hidden = true; return; }
+
   card.href = item.link;
   $('companionLabel').textContent = [item.source, ago(item.at)].filter(Boolean).join(' · ');
   $('companionTitle').textContent = item.title;
@@ -299,20 +370,20 @@ function showCompanion(mainFeedIndex = -1) {
    here, on the way in, and the strip grows under the reader's hand rather
    than making them wait on it before anything appears. */
 
-const smoothly = () =>
+const smoothly = (): boolean =>
   !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* What the line under the piece offers. Once a gallery has been opened its
    count is known for good, so the cue can say how much is in there. */
-function cueFor(piece) {
-  if (!piece.viewer) return 'Read the note';
+function cueFor(piece: Piece): string {
+  if (piece.kind !== 'feed' || !piece.viewer) return 'Read the note';
   const known = knownGallery(piece.gallery);
   const n = known ? known.length : (piece.images ? piece.images.length : 1);
   if (n > 1) return n + ' images';
   return piece.gallery ? 'See the rest' : 'See it bigger';
 }
 
-function markViewer(i) {
+function markViewer(i: number): void {
   const n = $('galleryStrip').children.length;
   $('galleryCount').textContent = n > 1 ? `${i + 1} / ${n}` : '';
   $('galleryPrev').disabled = i <= 0;
@@ -325,20 +396,20 @@ function markViewer(i) {
    between two pictures. The reader's own scrolling is what sets it instead. */
 let viewerIndex = 0;
 let steering = false;
-let steerTimer;
+let steerTimer: number | undefined;
 
-const viewerAt = () => {
+const viewerAt = (): number => {
   const strip = $('galleryStrip');
   return Math.round(strip.scrollLeft / (strip.clientWidth || 1));
 };
 
-function viewerSettle() {
+function viewerSettle(): void {
   steering = false;
   viewerIndex = viewerAt();
   markViewer(viewerIndex);
 }
 
-function viewerGo(i) {
+function viewerGo(i: number): void {
   const strip = $('galleryStrip');
   const n = strip.children.length;
   if (n < 2) return;
@@ -356,9 +427,9 @@ function viewerGo(i) {
   markViewer(at);   // say so now rather than when the scrolling finishes
 }
 
-const viewerStep = (by) => viewerGo(viewerIndex + by);
+const viewerStep = (by: number): void => viewerGo(viewerIndex + by);
 
-function drawSlides(shots) {
+function drawSlides(shots: readonly Shot[]): void {
   const strip = $('galleryStrip');
 
   strip.replaceChildren(...shots.map((s) => {
@@ -367,7 +438,7 @@ function drawSlides(shots) {
     img.className = 'gallery-img';
     slide.append(img);
     // A picture that will not load leaves its frame rather than the count.
-    mountImage(img, s.u, { upto: 2, fallback: s.alt || null,
+    mountImage(img, s.u, { upto: 2, fallback: s.alt ?? null,
                            onFail: () => img.remove() });
     return slide;
   }));
@@ -382,22 +453,26 @@ function drawSlides(shots) {
 let viewerTurn = 0;    // a slow gallery must not land in a sheet opened since
 let viewerFor = '';    // what is already hung, so reopening does not reload it
 
-function fillViewer(piece) {
+function fillViewer(piece: Piece | null): void {
   const wrap = $('gallery');
   const news = $('galleryNews');
   const turn = ++viewerTurn;
 
-  const urls = !piece || !piece.viewer ? []
-    : piece.images && piece.images.length ? piece.images
-    : piece.image ? [piece.image]
+  // Only a looking feed's item opens onto pictures.
+  const shown = piece && piece.kind === 'feed' && piece.viewer ? piece : null;
+
+  const urls = !shown ? []
+    : shown.images && shown.images.length ? shown.images
+    : shown.image ? [shown.image]
     : [];
 
   // The first picture is the one the card is showing, and the only one with a
   // crop behind it to fall back on.
-  const have = urls.map((u, i) =>
-    (i === 0 && piece.imageAlt ? { u, alt: piece.imageAlt } : { u }));
+  const alt = shown?.imageAlt;
+  const have: Shot[] = urls.map((u, i) =>
+    (i === 0 && alt ? { u, alt } : { u }));
 
-  if (!have.length) {
+  if (!shown || !have.length) {
     wrap.hidden = true;
     news.hidden = true;
     $('galleryStrip').replaceChildren();
@@ -408,21 +483,21 @@ function fillViewer(piece) {
   wrap.hidden = false;
   news.hidden = true;
 
-  const same = viewerFor === piece.link.url && $('galleryStrip').children.length;
+  const same = viewerFor === shown.link.url && $('galleryStrip').children.length;
   if (!same) {
-    viewerFor = piece.link.url;
+    viewerFor = shown.link.url;
     drawSlides(have);
   }
-  if (!piece.gallery) return;
+  if (!shown.gallery) return;
 
   // A gallery already known is in hand before the sheet has finished rising,
   // so only say what is going on when there is actually a wait.
-  if (!knownGallery(piece.gallery) && $('galleryStrip').children.length < 2) {
+  if (!knownGallery(shown.gallery) && $('galleryStrip').children.length < 2) {
     news.textContent = 'Looking for the rest of this post…';
     news.hidden = false;
   }
 
-  loadGallery(piece.gallery).then((shots) => {
+  void loadGallery(shown.gallery).then((shots) => {
     if (turn !== viewerTurn) return;              // a different sheet is up now
 
     // Silence here was the wrong call: a post you know holds five pictures,
@@ -439,13 +514,13 @@ function fillViewer(piece) {
     if (shots.length < 2) return;                 // nothing more than we had
     if ($('galleryStrip').children.length === shots.length) return;
     drawSlides(shots);
-    $('cue').textContent = cueFor(piece);         // the count is known now
+    $('cue').textContent = cueFor(shown);         // the count is known now
   });
 }
 
 /* ── Sheets ─────────────────────────────────────────────────── */
 
-function openNote() {
+function openNote(): void {
   fillViewer(showing);
   $('scrim').hidden = false;
   $('note').hidden = false;
@@ -454,18 +529,18 @@ function openNote() {
   $('noteClose').focus({ preventScroll: true });
 }
 
-function closeNote() {
+function closeNote(): void {
   $('note').hidden = true;
   if ($('panel').hidden) $('scrim').hidden = true;
   $('piece').setAttribute('aria-expanded', 'false');
   $('piece').focus();
 }
 
-const noteIsOpen = () => !$('note').hidden;
+const noteIsOpen = (): boolean => !$('note').hidden;
 
 /* ── Clock ──────────────────────────────────────────────────── */
 
-function tick() {
+function tick(): void {
   const now = new Date();
   $('time').textContent = now
     .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
@@ -473,97 +548,6 @@ function tick() {
   $('date').textContent = now.toLocaleDateString([], {
     weekday: 'short', day: 'numeric', month: 'short'
   });
-}
-
-/* ── Weather ────────────────────────────────────────────────── */
-
-const SKY = {
-  0: 'clear', 1: 'mostly clear', 2: 'partly cloudy', 3: 'overcast',
-  45: 'fog', 48: 'freezing fog',
-  51: 'light drizzle', 53: 'drizzle', 55: 'heavy drizzle',
-  56: 'freezing drizzle', 57: 'freezing drizzle',
-  61: 'light rain', 63: 'rain', 65: 'heavy rain',
-  66: 'freezing rain', 67: 'freezing rain',
-  71: 'light snow', 73: 'snow', 75: 'heavy snow', 77: 'snow grains',
-  80: 'showers', 81: 'showers', 82: 'heavy showers',
-  85: 'snow showers', 86: 'snow showers',
-  95: 'thunderstorms', 96: 'thunderstorms', 99: 'thunderstorms'
-};
-
-/* Accepts a city, a US ZIP, a Canadian or UK postcode, or "Paris, FR". */
-async function lookupPlace(query) {
-  const q = query.trim();
-  if (!q) return null;
-
-  const postal = [
-    [/^\d{5}(-\d{4})?$/, 'us', (s) => s.slice(0, 5)],
-    [/^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/, 'ca', (s) => s.slice(0, 3).toUpperCase()],
-    [/^[A-Za-z]{1,2}\d[A-Za-z\d]?[ ]?\d[A-Za-z]{2}$/, 'gb', (s) => s.replace(/\s+/g, ' ').toUpperCase()],
-    [/^\d{4}$/, 'de', (s) => s]
-  ];
-
-  for (const [re, country, clean] of postal) {
-    if (!re.test(q)) continue;
-    try {
-      const res = await fetch(`https://api.zippopotam.us/${country}/${encodeURIComponent(clean(q))}`);
-      if (!res.ok) continue;
-      const data = await res.json();
-      const p = data.places && data.places[0];
-      if (!p) continue;
-      const state = p['state abbreviation'] || '';
-      return {
-        name: p['place name'] + (state ? ', ' + state : ''),
-        lat: parseFloat(p.latitude),
-        lon: parseFloat(p.longitude)
-      };
-    } catch { /* fall through to the name lookup */ }
-  }
-
-  try {
-    const res = await fetch('https://geocoding-api.open-meteo.com/v1/search'
-      + `?name=${encodeURIComponent(q)}&count=1`);
-    const data = await res.json();
-    const hit = data.results && data.results[0];
-    if (!hit) return null;
-    return { name: hit.name, lat: hit.latitude, lon: hit.longitude };
-  } catch {
-    return null;
-  }
-}
-
-async function loadWeather({ force = false } = {}) {
-  const place = Settings.get('place');
-  const units = Settings.get('units');
-  const cached = store.get('wx', null);
-  const key = place.name + '|' + units;
-
-  if (!force && cached && cached.key === key &&
-      Date.now() - cached.at < WX_MAX_AGE) {
-    $('weather').textContent = cached.text;
-    return;
-  }
-
-  // An hour-old reading is nearer the truth than an em dash, and putting it up
-  // now means the fetch below only ever edits a number rather than filling an
-  // empty slot as the reader is looking at it.
-  if (cached && cached.key === key) $('weather').textContent = cached.text;
-
-  try {
-    const res = await fetch('https://api.open-meteo.com/v1/forecast'
-      + `?latitude=${place.lat}&longitude=${place.lon}`
-      + `&current=temperature_2m,weather_code&temperature_unit=${units}`);
-    if (!res.ok) throw new Error(res.status);
-    const data = await res.json();
-
-    const temp = Math.round(data.current.temperature_2m);
-    const sky = SKY[data.current.weather_code] || '';
-    const text = `${place.name} · ${temp}° ${sky}`.trim();
-
-    $('weather').textContent = text;
-    store.set('wx', { at: Date.now(), key, text });
-  } catch {
-    $('weather').textContent = cached ? cached.text : 'weather unavailable';
-  }
 }
 
 /* ── Putting it on screen ───────────────────────────────────── */
@@ -575,9 +559,14 @@ async function loadWeather({ force = false } = {}) {
    slot showed, and only a new slot, a nudge from the reader, or a caller that
    insists moves it. The backdrop keeps its own clock and is asked for either
    way; it is idempotent too. */
-let shownSlot = null;
+let shownSlot: number | null = null;
 
-function render({ animate = false, force = false } = {}) {
+/* The key of what is up, so a feed refresh can ask whether it still stands. */
+let shownKey = '';
+
+function render(
+  { animate = false, force = false }: { animate?: boolean; force?: boolean } = {}
+): void {
   const slot = slotNow() + skip();
 
   if (slot === shownSlot && !animate && !force) {
@@ -587,7 +576,7 @@ function render({ animate = false, force = false } = {}) {
 
   const sel = selection(slot);
   shownSlot = slot;
-  window.__shown = sel.key;
+  shownKey = sel.key;
   show(sel.piece, slot);
   showCompanion(sel.feedIndex);
   showBackdrop();
@@ -600,23 +589,26 @@ function render({ animate = false, force = false } = {}) {
   }
 }
 
-function applyLayout() {
+function applyLayout(): void {
   const align = Settings.get('align');
   $('case').dataset.align = align;
   document.body.classList.toggle('centered', align === 'center');
+  // The || guards are not dead: settings come back out of localStorage
+  // unvalidated, so a value stored by an older version can still fall
+  // outside what the type says is possible.
   document.documentElement.style.setProperty(
-    '--s', SIZE_SCALE[Settings.get('size')] || 1);
+    '--s', String(SIZE_SCALE[Settings.get('size')] || 1));
   document.documentElement.style.setProperty(
-    '--veil', VEIL_LEVEL[Settings.get('veil')] || 0.88);
+    '--veil', String(VEIL_LEVEL[Settings.get('veil')] || 0.88));
   document.body.classList.remove('img-plain', 'img-muted', 'img-duotone');
   document.body.classList.add('img-' + (Settings.get('imageStyle') || 'muted'));
   document.body.classList.remove('edge-dissolve', 'edge-framed');
   document.body.classList.add('edge-' + (Settings.get('imageEdge') || 'dissolve'));
 }
 
-let backdropPool = [];
+let backdropPool: BackdropImage[] = [];
 
-function showBackdrop() {
+function showBackdrop(): void {
   if (Settings.get('backdrop') === 'ambient' || !backdropPool.length) {
     applyBackdrop(null);
     return;
@@ -625,7 +617,9 @@ function showBackdrop() {
     backdropPool, slotFor(Settings.get('backdropCadence')) + skip()));
 }
 
-async function refreshBackdrop({ settle = false, ...opts } = {}) {
+async function refreshBackdrop(
+  { settle = false, ...opts }: { settle?: boolean; force?: boolean } = {}
+): Promise<void> {
   try {
     backdropPool = await loadBackdropPool(opts);
   } catch {
@@ -640,7 +634,7 @@ async function refreshBackdrop({ settle = false, ...opts } = {}) {
   showBackdrop();
 }
 
-async function testBackdrop() {
+async function testBackdrop(): Promise<BackdropTest> {
   try {
     const pool = await loadBackdropPool({ force: true });
     backdropPool = pool;
@@ -648,18 +642,19 @@ async function testBackdrop() {
     return { ok: pool.length > 0, n: pool.length,
              error: pool.length ? '' : 'That source returned no usable images.' };
   } catch (e) {
-    return { ok: false, n: 0, error: e.message || 'Could not reach that source.' };
+    const why = e instanceof Error ? e.message : '';
+    return { ok: false, n: 0, error: why || 'Could not reach that source.' };
   }
 }
 
-function advance(step = 1) {
+function advance(step = 1): void {
   store.set('skip', store.get('skip', 0) + step);
   render({ animate: true });
 }
 
 /* Feeds added before the redirect fix may be stored under an origin that
    redirects. Rewrite them once, quietly. */
-function migrateFeeds() {
+function migrateFeeds(): void {
   const feeds = Settings.get('feeds') || [];
   let changed = false;
   const fixed = feeds.map((f) => {
@@ -671,19 +666,20 @@ function migrateFeeds() {
     store.set('feedCache', null);
     Settings.set('feeds', fixed);
   }
-  return changed;
 }
 
 /* Is the thing already on show still one of the things the list could offer?
    A collection piece always is. A feed item is only while the list still
    holds it — an item that has dropped off the end has to go. */
-function stillOnOffer(key) {
+function stillOnOffer(key: string): boolean {
   if (!key) return false;
   if (key[0] === 'p') return true;
   return feedItems.some((i) => 'f' + i.link === key);
 }
 
-async function refreshFeeds({ settle = false, ...opts } = {}) {
+async function refreshFeeds(
+  { settle = false, ...opts }: { settle?: boolean; force?: boolean } = {}
+): Promise<void> {
   const feeds = Settings.get('feeds');
   const wasLive = feedsLive();
   feedItems = Settings.get('feedMode') === 'off' ? [] : await loadFeeds(feeds, opts);
@@ -695,14 +691,14 @@ async function refreshFeeds({ settle = false, ...opts } = {}) {
      already up still stands, it keeps its place and the next tab picks from
      the updated list. A refresh the reader asked for is not settled: it should
      show what it fetched. */
-  if (settle && feedsLive() === wasLive && stillOnOffer(window.__shown)) return;
+  if (settle && feedsLive() === wasLive && stillOnOffer(shownKey)) return;
   render({ force: true });
 }
 
-function start() {
+function start(): void {
   // One tick of the tab counter per page load, before anything renders.
-  window.__tabSeq = store.get('tabSeq', 0) + 1;
-  store.set('tabSeq', window.__tabSeq);
+  tabCount = store.get('tabSeq', 0) + 1;
+  store.set('tabSeq', tabCount);
 
   applyLayout();
   migrateFeeds();
@@ -719,14 +715,14 @@ function start() {
   render();
   tick();
   setInterval(tick, 10000);
-  loadWeather();
+  void loadWeather();
   // Only a first paint made from a real cached list has something worth
   // keeping. With nothing to go on it put up a collection piece, and the
   // fetch is entitled to replace it.
-  refreshFeeds({ settle: primed });
-  refreshBackdrop({ settle: true });
+  void refreshFeeds({ settle: primed });
+  void refreshBackdrop({ settle: true });
 
-  const hooks = { refreshFeeds, testBackdrop };
+  const hooks: PanelHooks = { refreshFeeds, testBackdrop };
 
   $('piece').addEventListener('click', openNote);
   $('piece').addEventListener('keydown', (e) => {
@@ -739,10 +735,10 @@ function start() {
   $('galleryStrip').addEventListener('click', () => viewerStep(1));
 
   // Swiping and the trackpad move the strip themselves; the count follows.
-  let counting;
+  let counting: number | undefined;
   $('galleryStrip').addEventListener('scroll', () => {
     if (steering) return;              // our own scroll, already accounted for
-    cancelAnimationFrame(counting);
+    if (counting !== undefined) cancelAnimationFrame(counting);
     counting = requestAnimationFrame(viewerSettle);
   });
   $('galleryStrip').addEventListener('scrollend', viewerSettle);
@@ -768,11 +764,11 @@ function start() {
 
   Settings.onChange((key) => {
     if (['align', 'size', 'veil', 'imageStyle', 'imageEdge', '*'].includes(key)) applyLayout();
-    if (['units', 'place', '*'].includes(key)) loadWeather({ force: true });
-    if (key === 'minImageWidth') refreshBackdrop({ force: true });
-    else if (BACKDROP_KEYS.includes(key) || key === '*') refreshBackdrop();
+    if (['units', 'place', '*'].includes(key)) void loadWeather({ force: true });
+    if (key === 'minImageWidth') void refreshBackdrop({ force: true });
+    else if (BACKDROP_KEYS.includes(key) || key === '*') void refreshBackdrop();
     if (['periodHours', 'feedCadence', 'backdropCadence'].includes(key)) showBackdrop();
-    if (['feeds', 'feedMode', '*'].includes(key)) refreshFeeds();
+    if (['feeds', 'feedMode', '*'].includes(key)) void refreshFeeds();
     else render({ force: true });
   });
 
@@ -782,7 +778,7 @@ function start() {
       else if (noteIsOpen()) closeNote();
       return;
     }
-    if (e.target.tagName === 'INPUT') return;
+    if (e.target instanceof HTMLElement && e.target.tagName === 'INPUT') return;
     // With a sheet up the arrows belong to what is in it, not to the deck.
     if (noteIsOpen()) {
       if (e.key === 'ArrowRight') { e.preventDefault(); viewerStep(1); }
@@ -796,7 +792,7 @@ function start() {
   });
 
   // Plates are drawn at a size, so redraw if the window changes shape.
-  let resizeTimer;
+  let resizeTimer: number | undefined;
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {

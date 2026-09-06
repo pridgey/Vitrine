@@ -13,17 +13,62 @@ Click the piece to read the note behind it.
 
 ## Install
 
-1. Unzip this folder somewhere you will not delete it. The extension runs from
+Vitrine is written in TypeScript, so there is one build step before the
+browser can load it. You need [Node](https://nodejs.org) 18 or newer.
+
+```sh
+npm install
+npm run build      # writes dist/
+```
+
+1. Keep this folder somewhere you will not delete it. The extension runs from
    these files, so moving or removing the folder breaks it.
 2. Go to `chrome://extensions`. In Brave that is `brave://extensions`, in Edge
    `edge://extensions`, and so on for any other Chromium browser.
 3. Turn on **Developer mode**, top right.
-4. Click **Load unpacked** and choose the `vitrine` folder.
+4. Click **Load unpacked** and choose the **`dist`** folder — not the repo
+   root. `dist` is the built extension.
 5. Open a new tab. The browser will ask once whether to keep the new page. Say
    yes.
 
-To pick up an edit, go back to the extensions page and hit reload on the
-Vitrine card.
+To pick up an edit: run `npm run build` again, then hit reload on the Vitrine
+card on the extensions page. `npm run watch` rebuilds on save, so you only
+need the reload.
+
+---
+
+## Working on it
+
+```
+src/        TypeScript. src/newtab.ts is the entry point.
+static/     The half that is not code: newtab.html, manifest.json, css, icons.
+dist/       The built extension. Disposable — this is what Chrome loads.
+test/       Node's own test runner, driving the real bundle.
+```
+
+| | |
+|---|---|
+| `npm run build` | Bundle `src/` and copy `static/` into `dist/` |
+| `npm run watch` | The same, rebuilding whenever a file is saved |
+| `npm run check` | `tsc --noEmit` — types only, no output |
+| `npm test` | Build, then run everything in `test/` |
+| `npm run package` | Check, build minified, and zip `dist/` for the store |
+
+The modules are layered so nothing imports in a circle: `base` sits at the
+bottom, `settings` holds state and knows nothing about the UI, and `newtab`
+is the only module that reaches for all of them. The settings panel is handed
+the page's refresh functions rather than importing them, which is what keeps
+it from having to know what a new tab is.
+
+Types are on their strictest setting, including `noUncheckedIndexedAccess`
+and `exactOptionalPropertyTypes`. There are no `any`s and no non-null
+assertions in `src/`.
+
+The tests run the real bundle in a stub document, with only the network and
+the DOM faked. They are there for what a type checker cannot see: that a new
+tab paints from cache and then holds still, that a feed which fails falls back
+to the last good fetch, and that `newtab.html` and `base.ts` still agree about
+what is in the page.
 
 ---
 
@@ -194,8 +239,8 @@ one that fails to load folds the plate away instead of snatching it back.
 If you run a photo backdrop and an image-heavy feed at once, the ground pool
 keeps the two layers apart, and *Framed* edges separate them more firmly still.
 To give pictures more or less room, change `--cap` on `.figure` in
-`css/vitrine.css`. `AR_MIN` and `AR_MAX` in `js/newtab.js` are the shapes past
-which something is treated as a banner and not a photograph.
+`static/css/vitrine.css`. `AR_MIN` and `AR_MAX` in `src/newtab.ts` are the
+shapes past which something is treated as a banner and not a photograph.
 
 ---
 
@@ -277,10 +322,10 @@ your feed list.
 
 ## Making it yours
 
-**Adding pieces.** The collection lives in `js/pieces.js`. Copy an entry,
-replace the words, save, reload the extension:
+**Adding pieces.** The collection lives in `src/pieces.ts`. Copy an entry,
+replace the words, and run the build:
 
-```js
+```ts
 {
   kind:  'note',            // 'note', 'passage', or 'plate'
   lead:  'What appears large, under the glass.',
@@ -292,21 +337,23 @@ replace the words, save, reload the extension:
 ```
 
 `note` pieces get a reading size, `passage` pieces are set large. Both are
-plain text, no HTML.
+plain text, no HTML. Miss a field, or name a plate that does not exist, and
+`npm run check` will say so rather than the page going blank.
 
-**Colours.** The palette is at the top of `css/vitrine.css`. `--ink` is the
-ground, `--chalk` the text. Piece tints are the `TINT` table in `pieces.js`.
-Feed items borrow a tint from a hash of their source name, so a given subreddit
-always lights the ground the same colour.
+**Colours.** The palette is at the top of `static/css/vitrine.css`. `--ink` is
+the ground, `--chalk` the text. Piece tints are the `TINT` table in
+`src/pieces.ts`. Feed items borrow a tint from a hash of their source name, so
+a given subreddit always lights the ground the same colour.
 
-**Plates.** `js/plates.js` holds six figures drawn with the Canvas API: a
+**Plates.** `src/plates.ts` holds six figures drawn with the Canvas API: a
 sunflower head, Chladni nodal figures, the Venus rosette, an angular
 unconformity, a dome on pendentives, and a branching network. Each is a
-function of `(ctx, w, h, ink, rng)`. Add one, then reference it by name in a
-piece with `kind: 'plate'` and `draw: 'yourFunction'`.
+`PlateFn` — `(ctx, w, h, ink, rng)`. Add one to `PLATES` and reference it by
+name in a piece with `kind: 'plate'` and `draw: 'yourFunction'`; the name is
+checked against what is actually there.
 
-**Using real images.** Drop files into an `images/` folder and, in `show()` in
-`js/newtab.js`, handle a new kind that builds an `<img>` instead of a canvas.
+**Using real images.** Drop files into `static/images/` and, in `show()` in
+`src/newtab.ts`, handle a new kind that builds an `<img>` instead of a canvas.
 The wall label and note work the same way.
 
 ---

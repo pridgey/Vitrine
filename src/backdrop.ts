@@ -6,36 +6,56 @@
  * rather than leaving an empty page.
  */
 
+import { $, store, looksLikeImage } from './base.js';
+import { Settings } from './settings.js';
+import type { BackdropMode } from './settings.js';
+
+/** One candidate ground, with whatever attribution its source asks for. */
+export interface BackdropImage {
+  url: string;
+  credit: string;
+  link?: string;
+  /** Unsplash's terms ask for a ping here when a photo is actually shown. */
+  download?: string;
+}
+
+/** Everything a source needs to know, lifted out of Settings in one go. */
+export interface PoolConfig {
+  nasaKey: string;
+  unsplashKey: string;
+  unsplashQuery: string;
+  backdropSubs: string[];
+  customImages: string[];
+  minImageWidth: number;
+}
+
+/** The modes that go to the network. 'ambient' needs nothing and has no pool. */
+type PhotoMode = Exclude<BackdropMode, 'ambient'>;
+
 const POOL_MAX_AGE = 6 * 60 * 60 * 1000;    // refetch the pool twice a day
 const APOD_MAX_AGE = 12 * 60 * 60 * 1000;   // the picture of the day changes daily
 
-const IMG_RE = /\.(jpe?g|png|webp|avif)(\?|#|$)/i;
-const IMG_HOST = /(^|\.)(i\.redd\.it|preview\.redd\.it|images-assets\.nasa\.gov|apod\.nasa\.gov|images\.unsplash\.com)$/i;
-
-function looksLikeImage(url) {
-  if (!url || !/^https?:\/\//i.test(url)) return false;
-  try {
-    const u = new URL(url);
-    return IMG_RE.test(u.pathname) || IMG_HOST.test(u.hostname);
-  } catch { return false; }
-}
-
-/* Each source returns a pool of { url, credit, link }. */
-const SOURCES = {
+/* Each source turns its service's answer into a pool. Any of them may throw:
+   the panel's "Test this source" button shows what they say, and a failure on
+   a new tab just leaves the bloom up. */
+const SOURCES: Record<PhotoMode, (cfg: PoolConfig) => Promise<BackdropImage[]>> = {
 
   async apod(cfg) {
     const key = (cfg.nasaKey || '').trim() || 'DEMO_KEY';
     const res = await fetch(`https://api.nasa.gov/planetary/apod?api_key=${encodeURIComponent(key)}&thumbs=true`);
     if (res.status === 429) throw new Error('NASA is rate-limiting the shared demo key. Add your own — it is free.');
     if (!res.ok) throw new Error('NASA returned ' + res.status);
-    const d = await res.json();
+    const d = (await res.json()) as {
+      media_type?: string; hdurl?: string; url?: string; thumbnail_url?: string;
+      title?: string; copyright?: string;
+    };
 
     const url = d.media_type === 'image' ? (d.hdurl || d.url) : d.thumbnail_url;
     if (!url) throw new Error('Today\'s entry is a video with no still image.');
 
     return [{
       url,
-      credit: [d.title, d.copyright && d.copyright.trim()].filter(Boolean).join(' — '),
+      credit: [d.title, d.copyright?.trim()].filter(Boolean).join(' — '),
       link: 'https://apod.nasa.gov/apod/astropix.html'
     }];
   },
@@ -51,17 +71,26 @@ const SOURCES = {
     if (res.status === 401) throw new Error('Unsplash rejected that key.');
     if (!res.ok) throw new Error('Unsplash returned ' + res.status);
 
-    const data = await res.json();
+    interface UnsplashPhoto {
+      urls?: { raw?: string };
+      user?: { name?: string };
+      links?: { html?: string; download_location?: string };
+    }
+    const data = (await res.json()) as UnsplashPhoto | UnsplashPhoto[];
     const list = Array.isArray(data) ? data : [data];
 
-    return list.map((p) => ({
-      // Unsplash asks that you request a sized image rather than the raw file.
-      url: p.urls.raw + '&w=2400&q=80&fm=jpg&fit=max',
-      credit: 'Unsplash — ' + (p.user && p.user.name ? p.user.name : 'unknown'),
-      link: p.links && p.links.html,
-      // Unsplash's terms ask for this ping when a photo is actually shown.
-      download: p.links && p.links.download_location
-    })).filter((p) => p.url);
+    return list.flatMap((p): BackdropImage[] => {
+      const raw = p.urls?.raw;
+      if (!raw) return [];
+      return [{
+        // Unsplash asks that you request a sized image rather than the raw file.
+        url: raw + '&w=2400&q=80&fm=jpg&fit=max',
+        credit: 'Unsplash — ' + (p.user?.name ?? 'unknown'),
+        ...(p.links?.html ? { link: p.links.html } : {}),
+        // Unsplash's terms ask for this ping when a photo is actually shown.
+        ...(p.links?.download_location ? { download: p.links.download_location } : {})
+      }];
+    });
   },
 
   async subreddit(cfg) {
@@ -69,29 +98,42 @@ const SOURCES = {
     if (!subs.length) throw new Error('Add at least one subreddit.');
     const minW = cfg.minImageWidth || 0;
 
-    const pools = await Promise.all(subs.map(async (sub) => {
+    interface RedditListing {
+      data?: { children?: { data?: {
+        over_18?: boolean;
+        url?: string;
+        author?: string;
+        permalink?: string;
+        preview?: { images?: { source?: { url?: string; width?: number } }[] };
+      } }[] };
+    }
+
+    const pools = await Promise.all(subs.map(async (sub): Promise<BackdropImage[]> => {
       const name = sub.replace(/^\/?r\//i, '').replace(/\/$/, '');
       const res = await fetch(
         `https://www.reddit.com/r/${encodeURIComponent(name)}/hot.json?limit=75&raw_json=1`);
       if (!res.ok) return [];
-      const data = await res.json();
-      const posts = (data.data && data.data.children) || [];
+      const data = (await res.json()) as RedditListing;
+      const posts = data.data?.children ?? [];
 
-      return posts.map((c) => c.data).filter((d) => d && !d.over_18).map((d) => {
-        const preview = d.preview && d.preview.images && d.preview.images[0];
-        const best = preview && preview.source && preview.source.url;
+      return posts.flatMap((c): BackdropImage[] => {
+        const d = c.data;
+        if (!d || d.over_18) return [];
+
+        const source = d.preview?.images?.[0]?.source;
+        const best = source?.url;
         const url = looksLikeImage(best) ? best : (looksLikeImage(d.url) ? d.url : null);
-        if (!url) return null;
+        if (!url) return [];
         // Only filtered if you ask for it. A small image is stretched to fit,
         // which is soft, but that is a look you are allowed to want.
-        const w = preview && preview.source && preview.source.width;
-        if (minW && w && w < minW) return null;
-        return {
+        if (minW && source?.width && source.width < minW) return [];
+
+        return [{
           url,
           credit: 'r/' + name + ' — u/' + (d.author || 'unknown'),
           link: 'https://www.reddit.com' + d.permalink
-        };
-      }).filter(Boolean);
+        }];
+      });
     }));
 
     const all = pools.flat();
@@ -112,7 +154,7 @@ const SOURCES = {
 
 /* ── Fetching and caching the pool ──────────────────────────── */
 
-function poolConfig() {
+function poolConfig(): PoolConfig {
   return {
     nasaKey: Settings.get('nasaKey'),
     unsplashKey: Settings.get('unsplashKey'),
@@ -123,7 +165,15 @@ function poolConfig() {
   };
 }
 
-const poolKey = (mode) => mode + '|' + JSON.stringify(poolConfig());
+const poolKey = (mode: BackdropMode): string =>
+  mode + '|' + JSON.stringify(poolConfig());
+
+/** What the pool cache holds between tabs. */
+interface PoolCache {
+  at: number;
+  key: string;
+  pool: BackdropImage[];
+}
 
 /* The pool as it was last fetched, read straight out of storage. The new tab
  * primes itself with this so the first paint already carries its photograph,
@@ -131,21 +181,23 @@ const poolKey = (mode) => mode + '|' + JSON.stringify(poolConfig());
  * text over the veil with it — a moment later. Age is deliberately not
  * checked: a slightly old picture is the right one to hold while
  * loadBackdropPool goes looking for a fresher pool. */
-function cachedBackdropPool() {
+export function cachedBackdropPool(): BackdropImage[] {
   const mode = Settings.get('backdrop');
   if (mode === 'ambient') return [];
-  const cached = store.get('bgPool', null);
+  const cached = store.get<PoolCache | null>('bgPool', null);
   return cached && cached.key === poolKey(mode) ? cached.pool : [];
 }
 
-async function loadBackdropPool({ force = false } = {}) {
+export async function loadBackdropPool(
+  { force = false }: { force?: boolean } = {}
+): Promise<BackdropImage[]> {
   const mode = Settings.get('backdrop');
   if (mode === 'ambient') return [];
 
   const cfg = poolConfig();
   const key = poolKey(mode);
   const maxAge = mode === 'apod' ? APOD_MAX_AGE : POOL_MAX_AGE;
-  const cached = store.get('bgPool', null);
+  const cached = store.get<PoolCache | null>('bgPool', null);
 
   if (!force && cached && cached.key === key && Date.now() - cached.at < maxAge) {
     return cached.pool;
@@ -158,10 +210,11 @@ async function loadBackdropPool({ force = false } = {}) {
     return pool;
   }
 
-  const origins = {
+  const origins: string | undefined = {
     apod: 'https://api.nasa.gov/*',
     unsplash: 'https://api.unsplash.com/*',
-    subreddit: 'https://www.reddit.com/*'
+    subreddit: 'https://www.reddit.com/*',
+    custom: undefined
   }[mode];
 
   if (origins && typeof chrome !== 'undefined' && chrome.permissions) {
@@ -178,19 +231,22 @@ async function loadBackdropPool({ force = false } = {}) {
 
 /* ── Putting one on screen ──────────────────────────────────── */
 
-function pickFromPool(pool, index) {
+export function pickFromPool(
+  pool: readonly BackdropImage[],
+  index: number
+): BackdropImage | null {
   if (!pool.length) return null;
-  return pool[((index % pool.length) + pool.length) % pool.length];
+  return pool[((index % pool.length) + pool.length) % pool.length] ?? null;
 }
 
 /* Which photograph is already up. A backdrop is asked for on every render, and
  * most renders want the one that is there — re-applying it restarts a 1400ms
  * fade for no reason and pings Unsplash a second time for the same picture. */
-let backdropOnScreen = null;
+let backdropOnScreen: string | null = null;
 
-const backdropUp = () => backdropOnScreen !== null;
+export const backdropUp = (): boolean => backdropOnScreen !== null;
 
-function applyBackdrop(image) {
+export function applyBackdrop(image: BackdropImage | null): void {
   const layer = $('backdrop');
   const credit = $('credit');
 
@@ -199,7 +255,7 @@ function applyBackdrop(image) {
   backdropOnScreen = url;
 
   if (!image) {
-    layer.style.opacity = 0;
+    layer.style.opacity = '0';
     document.body.classList.remove('has-image');
     credit.hidden = true;
     return;
@@ -207,8 +263,8 @@ function applyBackdrop(image) {
 
   const pre = new Image();
   pre.onload = () => {
-    layer.style.backgroundImage = `url("${CSS.escape ? image.url : image.url}")`;
-    layer.style.opacity = 1;
+    layer.style.backgroundImage = `url("${image.url}")`;
+    layer.style.opacity = '1';
     document.body.classList.add('has-image');
 
     if (image.credit) {
@@ -227,7 +283,7 @@ function applyBackdrop(image) {
     }
   };
   pre.onerror = () => {
-    layer.style.opacity = 0;
+    layer.style.opacity = '0';
     document.body.classList.remove('has-image');
     credit.hidden = true;
   };

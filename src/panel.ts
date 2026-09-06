@@ -1,66 +1,39 @@
-/* Vitrine — settings.
+/* Vitrine — the settings panel.
  *
- * Everything configurable lives here, along with the panel that edits it.
- * Changes apply immediately; nothing needs a reload.
+ * Built fresh each time it opens, and rebuilt in place when a choice changes
+ * which other choices apply. Nothing here holds state of its own: every
+ * control reads Settings and writes straight back to it.
+ *
+ * The page hands in its own refresh functions rather than being imported
+ * from, which is what keeps the panel from having to know what a new tab is.
  */
 
-const DEFAULTS = {
-  align:       'left',        // 'left' | 'center'
-  size:        'medium',      // 'small' | 'medium' | 'large'
-  periodHours: 3,             // 'tab', or hours the main piece stays up
-  feedCadence: 'tab',         // 'tab' | 'piece' — how often the second card moves
-  backdropCadence: 6,         // 'tab', or hours between backdrops
-  units:       'fahrenheit',  // 'fahrenheit' | 'celsius'
-  feedMode:    'companion',   // 'companion' | 'mixed' | 'off'
-  feeds:       [],            // [{ url, name, imagesOnly }]
-  imageStyle:  'muted',       // 'plain' | 'muted' | 'duotone'
-  imageEdge:   'dissolve',    // 'dissolve' | 'framed'
-  place:       { name: 'Denver', lat: 39.7392, lon: -104.9847 },
+import { $, el } from './base.js';
+import { Settings } from './settings.js';
+import type { Cadence } from './settings.js';
+import { normaliseFeedUrl, ensureFeedPermission, parseFeed } from './feeds.js';
+import { lookupPlace } from './weather.js';
 
-  backdrop:      'ambient',   // 'ambient' | 'apod' | 'unsplash' | 'subreddit' | 'custom'
-  veil:          'medium',    // how hard a photo is dimmed behind the text
-  nasaKey:       '',
-  unsplashKey:   '',
-  unsplashQuery: '',
-  backdropSubs:  [],          // ['EarthPorn', 'ExposurePorn']
-  minImageWidth: 0,           // 0 = take them all and stretch to fit
-  customImages:  []           // full image URLs
-};
-
-const SIZE_SCALE = { small: 0.88, medium: 1, large: 1.18 };
-const VEIL_LEVEL = { light: 0.62, medium: 0.85, heavy: 1 };
-
-const Settings = {
-  data: { ...DEFAULTS, ...(typeof store !== 'undefined' ? store.get('settings', {}) : {}) },
-  listeners: [],
-
-  get(key) { return this.data[key]; },
-
-  set(key, value) {
-    this.data[key] = value;
-    store.set('settings', this.data);
-    this.listeners.forEach((fn) => fn(key, value));
-  },
-
-  onChange(fn) { this.listeners.push(fn); },
-
-  reset() {
-    this.data = { ...DEFAULTS };
-    store.set('settings', this.data);
-    this.listeners.forEach((fn) => fn('*', null));
-  }
-};
-
-/* ── Small pieces of panel furniture ────────────────────────── */
-
-function el(tag, cls, textContent) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (textContent != null) n.textContent = textContent;
-  return n;
+/** What the panel can ask the page to redo after a change. */
+export interface PanelHooks {
+  refreshFeeds(opts?: { force?: boolean }): Promise<void>;
+  testBackdrop(): Promise<BackdropTest>;
 }
 
-function row(labelText, control, hintText) {
+/** The answer from "Test this source". */
+export interface BackdropTest {
+  ok: boolean;
+  /** How many images the source offered. */
+  n: number;
+  /** Why it failed, in words the reader can act on. Empty when ok. */
+  error: string;
+}
+
+function row(
+  labelText: string,
+  control: HTMLElement,
+  hintText?: string
+): HTMLDivElement {
   const r = el('div', 'row');
   const left = el('div', 'row-left');
   left.append(el('span', 'row-label', labelText));
@@ -69,7 +42,11 @@ function row(labelText, control, hintText) {
   return r;
 }
 
-function textArea(value, placeholder, onCommit) {
+function textArea(
+  value: string,
+  placeholder: string,
+  onCommit: (v: string) => void
+): HTMLTextAreaElement {
   const t = el('textarea', 'feed-area');
   t.value = value;
   t.placeholder = placeholder;
@@ -79,7 +56,11 @@ function textArea(value, placeholder, onCommit) {
   return t;
 }
 
-function textField(value, placeholder, onCommit) {
+function textField(
+  value: string,
+  placeholder: string,
+  onCommit: (v: string) => void
+): HTMLInputElement {
   const i = el('input', 'feed-input');
   i.type = 'text';
   i.value = value;
@@ -90,9 +71,17 @@ function textField(value, placeholder, onCommit) {
   return i;
 }
 
-const lines = (v) => v.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
+const lines = (v: string): string[] =>
+  v.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
 
-function seg(options, current, onPick) {
+/* A row of buttons where exactly one is on. The value type is carried through
+   from the options, so the callback hands Settings.set something it accepts
+   and a wrong pairing will not compile. */
+function seg<T extends string | number>(
+  options: readonly (readonly [T, string])[],
+  current: T,
+  onPick: (value: T) => void
+): HTMLDivElement {
   const wrap = el('div', 'seg');
   options.forEach(([value, label]) => {
     const b = el('button', 'seg-btn', label);
@@ -110,7 +99,7 @@ function seg(options, current, onPick) {
 
 /* ── The panel ──────────────────────────────────────────────── */
 
-function buildPanel(hooks) {
+export function buildPanel(hooks: PanelHooks): void {
   const body = $('panelBody');
   const keepScroll = $('panel').scrollTop;
   const rebuild = () => { buildPanel(hooks); $('panel').scrollTop = keepScroll; };
@@ -130,18 +119,23 @@ function buildPanel(hooks) {
   /* Rotation */
   body.append(el('p', 'panel-section', 'Rotation'));
 
+  const HOURS: readonly (readonly [Cadence, string])[] =
+    [['tab', 'Tab'], [1, '1h'], [3, '3h'], [6, '6h'], [24, 'Day']];
+
   body.append(row('Main piece',
-    seg([['tab', 'Tab'], [1, '1h'], [3, '3h'], [6, '6h'], [24, 'Day']],
-        Settings.get('periodHours'), (v) => Settings.set('periodHours', v)),
+    seg(HOURS, Settings.get('periodHours'), (v) => Settings.set('periodHours', v)),
     'Tab means a different one on every new tab'));
 
   body.append(row('Second card',
     seg([['tab', 'Every tab'], ['piece', 'With the piece']], Settings.get('feedCadence'),
         (v) => Settings.set('feedCadence', v))));
 
+  const BG_HOURS: readonly (readonly [Cadence, string])[] =
+    [['tab', 'Tab'], [1, '1h'], [6, '6h'], [24, 'Day']];
+
   body.append(row('Backdrop',
-    seg([['tab', 'Tab'], [1, '1h'], [6, '6h'], [24, 'Day']],
-        Settings.get('backdropCadence'), (v) => Settings.set('backdropCadence', v))));
+    seg(BG_HOURS, Settings.get('backdropCadence'),
+        (v) => Settings.set('backdropCadence', v))));
 
   /* Feeds */
   body.append(el('p', 'panel-section', 'Feeds'));
@@ -188,7 +182,9 @@ function buildPanel(hooks) {
         : 'Show only posts with a picture';
       only.addEventListener('click', () => {
         const next = Settings.get('feeds').slice();
-        next[i] = { ...next[i], imagesOnly: !next[i].imagesOnly };
+        const cur = next[i];
+        if (!cur) return;                     // the list moved under us
+        next[i] = { ...cur, imagesOnly: !cur.imagesOnly };
         Settings.set('feeds', next);
         drawList();
       });
@@ -223,7 +219,7 @@ function buildPanel(hooks) {
   add.type = 'button';
   const status = el('p', 'feed-status', '');
 
-  async function addFeed() {
+  async function addFeed(): Promise<void> {
     const url = normaliseFeedUrl(input.value);
     if (!url) { status.textContent = 'That does not look like a URL.'; return; }
     if (Settings.get('feeds').some((f) => f.url === url)) {
@@ -240,7 +236,7 @@ function buildPanel(hooks) {
 
     try {
       const res = await fetch(url, { cache: 'no-store' });
-      if (!res.ok) throw new Error(res.status);
+      if (!res.ok) throw new Error(String(res.status));
       const parsed = parseFeed(await res.text(), url);
       if (!parsed || !parsed.items.length) throw new Error('empty');
 
@@ -361,7 +357,7 @@ function buildPanel(hooks) {
   placeBtn.type = 'button';
   const placeStatus = el('p', 'feed-status', '');
 
-  async function setPlace() {
+  async function setPlace(): Promise<void> {
     placeStatus.textContent = 'Looking…';
     const found = await lookupPlace(placeInput.value);
     if (!found) {
@@ -382,7 +378,7 @@ function buildPanel(hooks) {
   body.append(row('Location', el('span', 'row-spacer')), placeWrap, placeStatus);
 }
 
-function openPanel(hooks) {
+export function openPanel(hooks: PanelHooks): void {
   buildPanel(hooks);
   $('scrim').hidden = false;
   $('panel').hidden = false;
@@ -390,10 +386,10 @@ function openPanel(hooks) {
   $('panelClose').focus({ preventScroll: true });
 }
 
-function closePanel() {
+export function closePanel(): void {
   $('panel').hidden = true;
   if ($('note').hidden) $('scrim').hidden = true;
   $('settings').focus();
 }
 
-const panelIsOpen = () => !$('panel').hidden;
+export const panelIsOpen = (): boolean => !$('panel').hidden;
