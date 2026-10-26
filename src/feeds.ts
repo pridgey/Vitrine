@@ -96,7 +96,34 @@ export async function hasFeedPermission(url: string): Promise<boolean> {
   catch { return false; }
 }
 
-/* Extension pages can fetch anywhere they hold permission for. Ask first. */
+/* Every origin these feeds need that the browser is not currently letting us
+ * reach. A grant can go missing without anyone revoking it on purpose — a
+ * browser update, or the unpacked extension being reloaded from a new path —
+ * and nothing on a new tab can ask for it back, so this is how the page finds
+ * out it is working from an old copy. */
+export async function missingFeedAccess(feeds: readonly Feed[]): Promise<string[]> {
+  if (typeof chrome === 'undefined' || !chrome.permissions) return [];  // preview
+  const origins = [...new Set(feeds.flatMap((f) => originVariants(f.url)))];
+  const held = await Promise.all(origins.map(async (o) => {
+    try { return await chrome.permissions.contains({ origins: [o] }); }
+    catch { return false; }
+  }));
+  return origins.filter((_, i) => !held[i]);
+}
+
+/* Ask for everything missing in one prompt. Only works from a click: the
+ * browser refuses a request with no user gesture behind it, and it refuses a
+ * second one while the first is still on screen, which is why the feeds are
+ * not each allowed to ask for themselves. */
+export async function grantFeedAccess(feeds: readonly Feed[]): Promise<boolean> {
+  const origins = await missingFeedAccess(feeds);
+  if (!origins.length) return true;
+  try { return await chrome.permissions.request({ origins }); }
+  catch { return false; }
+}
+
+/* Extension pages can fetch anywhere they hold permission for. Ask first.
+ * For a click only — see grantFeedAccess. */
 export async function ensureFeedPermission(url: string): Promise<boolean> {
   const origins = originVariants(url);
   if (!origins.length) return false;
@@ -293,6 +320,13 @@ interface FeedCache {
   items: FeedItem[];
 }
 
+/* When the last good fetch happened, or 0 if there has not been one for
+ * these feeds. */
+export function feedCacheTime(feeds: readonly Feed[]): number {
+  const cache = store.get<FeedCache | null>('feedCache', null);
+  return cache && cache.key === feedKey(feeds) ? cache.at : 0;
+}
+
 export function cachedFeedItems(feeds: readonly Feed[]): FeedItem[] {
   if (!feeds.length) return [];
   const cache = store.get<FeedCache | null>('feedCache', null);
@@ -315,7 +349,9 @@ export async function loadFeeds(
 
   const results = await Promise.all(feeds.map(async (f) => {
     try {
-      if (!(await ensureFeedPermission(f.url))) return [];
+      // Checked, never asked for: a new tab has no click behind it, so a
+      // request here is refused every time. The panel asks instead.
+      if (!(await hasFeedPermission(f.url))) return [];
       const res = await fetch(f.url, { cache: 'no-store' });
       if (!res.ok) return [];
       const parsed = parseFeed(await res.text(), f.url, { imagesOnly: !!f.imagesOnly });

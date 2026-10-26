@@ -219,8 +219,12 @@ export async function loadBackdropPool(
 
   if (origins && typeof chrome !== 'undefined' && chrome.permissions) {
     const has = await chrome.permissions.contains({ origins: [origins] });
-    if (!has && !(await chrome.permissions.request({ origins: [origins] }))) {
-      throw new Error('Vitrine needs permission to reach that service.');
+    // Only a forced load can have a click behind it ("Test this source"); on
+    // a new tab the browser refuses to ask, so do not try.
+    const granted = has || (force &&
+      await chrome.permissions.request({ origins: [origins] }).catch(() => false));
+    if (!granted) {
+      throw new Error('Vitrine needs permission to reach that service. Press Test this source to allow it.');
     }
   }
 

@@ -16,7 +16,9 @@ import type { CollectionPiece, PlatePiece, Tint, Label, Link } from './pieces.js
 import { PLATES, mulberry32 } from './plates.js';
 import { Settings, SIZE_SCALE, VEIL_LEVEL } from './settings.js';
 import type { Cadence } from './settings.js';
-import { ago, cachedFeedItems, loadFeeds, loadGallery, knownGallery, normaliseFeedUrl } from './feeds.js';
+import {
+  ago, cachedFeedItems, loadFeeds, loadGallery, knownGallery, missingFeedAccess, normaliseFeedUrl
+} from './feeds.js';
 import type { FeedItem, Shot } from './feeds.js';
 import {
   applyBackdrop, backdropUp, cachedBackdropPool, loadBackdropPool, pickFromPool
@@ -677,12 +679,25 @@ function stillOnOffer(key: string): boolean {
   return feedItems.some((i) => 'f' + i.link === key);
 }
 
+/* A feed the browser will not let us reach still shows its last good fetch,
+   which is right for a bad hour and wrong for a lost permission: that never
+   comes back by itself, and the page just quietly gets older. So say so, on
+   the one control that leads somewhere it can be fixed. */
+async function flagFeedAccess(): Promise<void> {
+  const missing = Settings.get('feedMode') === 'off'
+    ? [] : await missingFeedAccess(Settings.get('feeds'));
+  const gear = $('settings');
+  gear.classList.toggle('alert', missing.length > 0);
+  gear.title = missing.length ? 'Settings — feeds need permission again' : 'Settings';
+}
+
 async function refreshFeeds(
   { settle = false, ...opts }: { settle?: boolean; force?: boolean } = {}
 ): Promise<void> {
   const feeds = Settings.get('feeds');
   const wasLive = feedsLive();
   feedItems = Settings.get('feedMode') === 'off' ? [] : await loadFeeds(feeds, opts);
+  void flagFeedAccess();
 
   /* The fetch that primes a new tab lands a moment after the first paint, and
      the fresh list may well put a different item in this slot — a feed that

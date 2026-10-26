@@ -68,7 +68,7 @@ export const IDS = [
   'panelReset', 'piece', 'scrim', 'settings', 'time', 'weather'
 ];
 
-export function makeSandbox({ local = {}, fetchImpl, preloadSucceeds = false } = {}) {
+export function makeSandbox({ local = {}, fetchImpl, preloadSucceeds = false, chrome } = {}) {
   const els = Object.fromEntries(IDS.map((id) => [id, mkEl()]));
   const raw = { ...local };
   const doc = {
@@ -109,7 +109,9 @@ export function makeSandbox({ local = {}, fetchImpl, preloadSucceeds = false } =
     devicePixelRatio: 1, innerWidth: 1440, innerHeight: 900,
     addEventListener: noop, removeEventListener: noop,
     HTMLElement: class {},
-    preloaded: [], preloadSucceeds, raw
+    preloaded: [], preloadSucceeds, raw,
+    // Left out unless a test hands one in, which the page reads as a preview.
+    ...(chrome ? { chrome } : {})
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;

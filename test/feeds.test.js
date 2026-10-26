@@ -113,3 +113,34 @@ test('the second card does not repeat the main slot', async () => {
   assert.equal(s.els.companion.hidden, false, 'the card should be up');
   assert.notEqual(s.els.companionTitle.textContent, lead(s));
 });
+
+/* The browser can drop a host permission without anyone revoking it. A new
+   tab cannot ask for it back — a request with no click behind it is refused —
+   so the page must not try, must keep showing what it had, and must say so. */
+test('a lost permission keeps the old fetch and flags the gear', async () => {
+  const asked = [];
+  const requested = [];
+  const s = await boot({
+    code, local: cached(40),
+    fetchImpl: async (url) => { asked.push(String(url)); return serve(rss([4, 3, 2, 1]))(url); },
+    chrome: { permissions: {
+      contains: async () => false,
+      request: async (p) => { requested.push(p); throw new Error('needs a user gesture'); }
+    } }
+  });
+  await new Promise((r) => setTimeout(r, 25));    // the flag lands after the fetch
+  assert.equal(lead(s), baseline);
+  assert.equal(asked.filter((u) => u.startsWith(FEED_URL)).length, 0,
+    'without permission the fetch would fail anyway');
+  assert.equal(requested.length, 0, 'a new tab must not ask for permission');
+  assert.ok(s.els.settings.classList.contains('alert'), 'the gear should carry the flag');
+});
+
+test('with permission held the gear carries no flag', async () => {
+  const s = await boot({
+    code, local: cached(40), fetchImpl: serve(rss([4, 3, 2, 1])),
+    chrome: { permissions: { contains: async () => true, request: async () => true } }
+  });
+  await new Promise((r) => setTimeout(r, 25));
+  assert.equal(s.els.settings.classList.contains('alert'), false);
+});

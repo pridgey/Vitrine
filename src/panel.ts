@@ -11,7 +11,10 @@
 import { $, el } from './base.js';
 import { Settings } from './settings.js';
 import type { Cadence } from './settings.js';
-import { normaliseFeedUrl, ensureFeedPermission, parseFeed } from './feeds.js';
+import {
+  normaliseFeedUrl, ensureFeedPermission, parseFeed,
+  missingFeedAccess, grantFeedAccess, feedCacheTime
+} from './feeds.js';
 import { lookupPlace } from './weather.js';
 
 /** What the panel can ask the page to redo after a change. */
@@ -208,7 +211,41 @@ export function buildPanel(hooks: PanelHooks): void {
       + 'the whole set if the post is a gallery.'));
   };
   drawList();
-  body.append(list);
+
+  /* Lost access never fixes itself, and a new tab cannot ask for it back, so
+     the panel is where it gets asked. Filled in once the browser answers. */
+  const access = el('div', 'feed-access');
+  const drawAccess = async (): Promise<void> => {
+    const feeds = Settings.get('feeds');
+    const missing = await missingFeedAccess(feeds);
+    access.replaceChildren();
+    if (!missing.length) return;
+
+    const hosts = [...new Set(missing.map((o) =>
+      o.replace(/^https?:\/\//, '').replace(/\/\*$/, '').replace(/^www\./, '')))];
+    const at = feedCacheTime(feeds);
+    const since = at
+      ? ', so feeds are stuck on what it fetched on '
+        + new Date(at).toLocaleDateString([], { day: 'numeric', month: 'short' })
+      : '';
+    access.append(el('p', 'feed-status',
+      `Vitrine no longer has permission to read ${hosts.join(', ')}${since}.`));
+
+    const allow = el('button', 'feed-btn', 'Allow access');
+    allow.type = 'button';
+    allow.addEventListener('click', async () => {
+      if (!(await grantFeedAccess(Settings.get('feeds')))) return;
+      allow.textContent = 'Refreshing…';
+      await hooks.refreshFeeds({ force: true });
+      void drawAccess();
+    });
+    const wrap = el('div', 'feed-add');
+    wrap.append(allow);
+    access.append(wrap);
+  };
+  void drawAccess();
+
+  body.append(access, list);
 
   const adder = el('div', 'feed-add');
   const input = el('input', 'feed-input');
@@ -265,9 +302,12 @@ export function buildPanel(hooks: PanelHooks): void {
   const refresh = el('button', 'link-btn', 'Refresh feeds now');
   refresh.type = 'button';
   refresh.addEventListener('click', async () => {
+    // A click is the only time a lost permission can be asked for again.
+    await grantFeedAccess(Settings.get('feeds'));
     refresh.textContent = 'Refreshing…';
     await hooks.refreshFeeds({ force: true });
     refresh.textContent = 'Refresh feeds now';
+    void drawAccess();
   });
   body.append(row('', refresh));
 

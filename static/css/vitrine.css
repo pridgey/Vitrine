@@ -853,6 +853,20 @@ body.centered .veil {
 }
 .tool { display: flex; }
 
+/* Feeds have lost access and are showing an old fetch. A dot on the gear,
+   since the panel behind it is where that gets fixed. */
+.tool.alert { position: relative; }
+.tool.alert::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #B08A82;
+}
+
 /* ── Smaller screens ────────────────────────────────────────── */
 
 @media (max-width: 620px) {
