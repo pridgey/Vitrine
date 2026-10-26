@@ -9,8 +9,8 @@
     "watch": "node build.js --watch",
     "check": "tsc --noEmit",
     "test": "node build.js && node --test test/",
-    "clean": "rm -rf dist",
-    "package": "npm run check && npm run build -- --minify && cd dist && zip -qr ../vitrine-$npm_package_version.zip . && echo \"wrote vitrine-$npm_package_version.zip\""
+    "clean": "rm -rf dist/* dist/.[!.]*",
+    "package": "npm run check && npm run build -- --minify --release && cd dist && zip -qr ../vitrine-$npm_package_version.zip . && echo \"wrote vitrine-$npm_package_version.zip\""
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",

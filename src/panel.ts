@@ -108,6 +108,43 @@ export function buildPanel(hooks: PanelHooks): void {
   const rebuild = () => { buildPanel(hooks); $('panel').scrollTop = keepScroll; };
   body.replaceChildren();
 
+  /* Lost access never fixes itself, and a new tab cannot ask for it back, so
+     the panel asks — first thing, above everything else, since until it is
+     answered every feed below is showing an old copy. Filled in once the
+     browser answers, and empty when nothing is missing. */
+  const access = el('div', 'access-alert');
+  access.setAttribute('role', 'alert');
+  const drawAccess = async (): Promise<void> => {
+    const feeds = Settings.get('feeds');
+    const missing = await missingFeedAccess(feeds);
+    access.replaceChildren();
+    if (!missing.length) return;
+
+    const hosts = [...new Set(missing.map((o) =>
+      o.replace(/^https?:\/\//, '').replace(/\/\*$/, '').replace(/^www\./, '')))];
+    const at = feedCacheTime(feeds);
+    const since = at
+      ? ', so feeds are stuck on what it fetched on '
+        + new Date(at).toLocaleDateString([], { day: 'numeric', month: 'short' })
+      : '';
+    access.append(
+      el('p', 'access-head', 'Feeds are not updating'),
+      el('p', 'access-body',
+        `Vitrine no longer has permission to read ${hosts.join(', ')}${since}.`));
+
+    const allow = el('button', 'feed-btn', 'Allow access');
+    allow.type = 'button';
+    allow.addEventListener('click', async () => {
+      if (!(await grantFeedAccess(Settings.get('feeds')))) return;
+      allow.textContent = 'Refreshing…';
+      await hooks.refreshFeeds({ force: true });
+      void drawAccess();
+    });
+    access.append(allow);
+  };
+  void drawAccess();
+  body.append(access);
+
   /* Layout */
   body.append(el('p', 'panel-section', 'Layout'));
 
@@ -212,40 +249,7 @@ export function buildPanel(hooks: PanelHooks): void {
   };
   drawList();
 
-  /* Lost access never fixes itself, and a new tab cannot ask for it back, so
-     the panel is where it gets asked. Filled in once the browser answers. */
-  const access = el('div', 'feed-access');
-  const drawAccess = async (): Promise<void> => {
-    const feeds = Settings.get('feeds');
-    const missing = await missingFeedAccess(feeds);
-    access.replaceChildren();
-    if (!missing.length) return;
-
-    const hosts = [...new Set(missing.map((o) =>
-      o.replace(/^https?:\/\//, '').replace(/\/\*$/, '').replace(/^www\./, '')))];
-    const at = feedCacheTime(feeds);
-    const since = at
-      ? ', so feeds are stuck on what it fetched on '
-        + new Date(at).toLocaleDateString([], { day: 'numeric', month: 'short' })
-      : '';
-    access.append(el('p', 'feed-status',
-      `Vitrine no longer has permission to read ${hosts.join(', ')}${since}.`));
-
-    const allow = el('button', 'feed-btn', 'Allow access');
-    allow.type = 'button';
-    allow.addEventListener('click', async () => {
-      if (!(await grantFeedAccess(Settings.get('feeds')))) return;
-      allow.textContent = 'Refreshing…';
-      await hooks.refreshFeeds({ force: true });
-      void drawAccess();
-    });
-    const wrap = el('div', 'feed-add');
-    wrap.append(allow);
-    access.append(wrap);
-  };
-  void drawAccess();
-
-  body.append(access, list);
+  body.append(list);
 
   const adder = el('div', 'feed-add');
   const input = el('input', 'feed-input');

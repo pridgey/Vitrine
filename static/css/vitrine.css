@@ -637,6 +637,39 @@ body.centered .veil {
 }
 .panel-section:first-child { margin-top: 0; }
 
+/* Feeds have lost access. Sits above everything in the panel, since every
+   feed setting below is moot until it is answered. Empty when all is well. */
+.access-alert:empty { display: none; }
+.access-alert {
+  margin: 0 0 1.6rem;
+  padding: 1rem 1.1rem 1.1rem;
+  border: 1px solid rgba(176, 138, 130, 0.55);
+  border-left-width: 3px;
+  border-radius: 4px;
+  background: rgba(176, 138, 130, 0.10);
+}
+.access-head {
+  margin: 0 0 0.35rem;
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #D2A79E;
+}
+.access-body {
+  margin: 0 0 0.9rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--chalk);
+}
+.access-alert + .panel-section { margin-top: 0; }
+.access-alert .feed-btn {
+  padding: 0.6rem 1.1rem;
+  color: var(--chalk);
+  border-color: rgba(176, 138, 130, 0.7);
+}
+.access-alert .feed-btn:hover { border-color: #D2A79E; }
+
 .row {
   display: flex;
   justify-content: space-between;

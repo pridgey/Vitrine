@@ -35,6 +35,13 @@ To pick up an edit: run `npm run build` again, then hit reload on the Vitrine
 card on the extensions page. `npm run watch` rebuilds on save, so you only
 need the reload.
 
+The build empties `dist` rather than deleting it, so the browser never loses
+the folder it loaded from — under Flatpak, deleting it breaks the portal link
+and the extension disappears. Development builds also pin the extension ID
+(`halafbilchhpkgaaanbdnacmaafcpond`) with a public key in the manifest, so
+removing and re-adding Vitrine keeps its settings. `npm run package` leaves
+the key out, since the Chrome Web Store will not accept one.
+
 ---
 
 ## Working on it
